@@ -237,3 +237,4 @@ Corte apenas conteúdo seu ou com autorização do criador. Repostar lives de te
 ## Créditos de ideias
 
 Abordagem inspirada em [AI-Youtube-Shorts-Generator](https://github.com/Anil-matcha/AI-Youtube-Shorts-Generator) (MIT) e [OpenShorts](https://github.com/mutonby/openshorts) (MIT). Nenhum código foi copiado.
+
