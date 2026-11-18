@@ -15,7 +15,7 @@ def video_filter(framing: Framing, subtitles: str | None) -> str:
     if framing.mode == "fit":
         return (f"[0:v]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=decrease,"
                 f"pad={OUT_W}:{OUT_H}:(ow-iw)/2:(oh-ih)/2,setsar=1{subs}[v]")
-    if framing.mode == "gameplay":
+    if framing.mode in {"gameplay", "anime", "mass"}:
         # Full source frame on a blurred vertical canvas: all of a 16:9 game capture stays visible.
         return (f"[0:v]split[a][b];"
                 f"[a]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,crop={OUT_W}:{OUT_H},boxblur=24:4[bg];"

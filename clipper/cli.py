@@ -31,8 +31,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--speaker-turns", type=Path, default=None, help="JSON with start/end/speaker annotations; required with --prefer-speaker")
     run_p.add_argument("--speaker-mode", choices=("prefer", "only"), default="prefer", help="prefer this participant or allow only their speech")
     run_p.add_argument("--speaker-weight", type=float, default=0.25, help="speaker share weight in ranking, from 0 to 1 (default: 0.25)")
-    run_p.add_argument("--content-type", choices=("auto", "podcast", "gameplay"), default="auto",
-                       help="layout: auto detects game titles; gameplay preserves the full game screen")
+    run_p.add_argument("--content-type", choices=("auto", "podcast", "gameplay", "anime", "mass"), default="auto",
+                       help="layout/editorial mode; gameplay, anime and mass preserve the full source frame")
     run_p.add_argument("--llm-window-seconds", type=int, default=None, metavar="SECONDS",
                        help="transcript span per LLM call (default: 900; use 300 on a notebook)")
     run_p.add_argument("--llm-output-tokens", type=int, default=None, metavar="TOKENS",
@@ -47,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     render_p = sub.add_parser("render", help="re-render clips from an edited highlights.json")
     render_p.add_argument("workdir", help="folder created by `run` (out/<video>)")
     render_p.add_argument("--batch", default=None, help="name for this new render batch; preserves previous batches")
-    render_p.add_argument("--content-type", choices=("auto", "podcast", "gameplay"), default="auto")
+    render_p.add_argument("--content-type", choices=("auto", "podcast", "gameplay", "anime", "mass"), default="auto")
     _add_render_options(render_p)
     metrics_p = sub.add_parser("metrics", help="report attention by segment without an LLM or rendering")
     metrics_p.add_argument("workdir", help="existing video output folder")

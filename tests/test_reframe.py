@@ -36,3 +36,10 @@ def test_gameplay_titles_use_full_screen_layout_and_override_is_available():
     assert resolve_content_type("Conversa sobre tecnologia") == "podcast"
     assert resolve_content_type("Conversa sobre GTA", "podcast") == "podcast"
     assert "force_original_aspect_ratio=decrease" in video_filter(Framing("gameplay", 1920, 1080), None)
+
+
+def test_anime_and_mass_titles_use_wide_layouts():
+    assert resolve_content_type("Anime dublado episodio 3") == "anime"
+    assert resolve_content_type("Santa Missa e homilia de domingo") == "mass"
+    for mode in ("anime", "mass"):
+        assert "force_original_aspect_ratio=decrease" in video_filter(Framing(mode, 1920, 1080), None)

@@ -34,6 +34,17 @@ Rules:
 - Write "title" and "hook" in the transcript's language ({language}). The title is a short social media caption, max 70 characters; the hook has at most 16 words.
 - "reason" explains in at most 20 words why the clip would perform."""
 
+CONTENT_GUIDANCE = {
+    "anime": """\nAnime-specific editorial rules:
+- Prefer self-contained dialogue, a reveal, an emotional turning point, a memorable line or a clear story payoff.
+- Do not invent visual events from the transcript. Avoid a clip that needs unseen context to make sense.
+- Keep the original meaning; do not use misleading titles or fabricated spoilers.\n""",
+    "mass": """\nMass-specific editorial rules:
+- Prefer a complete reflection from the homily, Gospel explanation, prayer or practical faith message.
+- Be reverent and accurate: never turn a sacred rite, personal prayer or scripture into rage bait or a misleading claim.
+- Keep enough context to preserve the intended religious meaning and avoid cutting prayers or sentences in half.\n""",
+}
+
 SCHEMA = {
     "type": "object",
     "properties": {
@@ -269,16 +280,19 @@ def detect(transcript: Transcript, peaks: list[Peak], llm: JsonLLM, max_clips: i
            min_dur: float, max_dur: float, cache: Path,
            excluded: tuple[tuple[float, float], ...] = (),
            preference: SpeakerPreference | None = None,
-           window_seconds: float = 900.0) -> list[Highlight]:
+           window_seconds: float = 900.0,
+           content_type: str = "podcast") -> list[Highlight]:
     spans = windows(transcript.duration, size=window_seconds)
     per_chunk = candidates_per_window(max_clips, len(spans))
     system = SYSTEM_PROMPT.format(min_dur=int(min_dur), max_dur=int(max_dur),
                                   per_chunk=per_chunk, language=transcript.language)
+    system += CONTENT_GUIDANCE.get(content_type, "")
     if preference:
         system += preference.prompt()
     params = {"min_dur": min_dur, "max_dur": max_dur, "per_chunk": per_chunk,
               "max_clips": max_clips, "excluded": [list(span) for span in excluded],
               "window_seconds": window_seconds,
+              "content_type": content_type,
               "signals_fingerprint": hashlib.sha256(json.dumps([asdict(p) for p in peaks], sort_keys=True).encode()).hexdigest()}
     if preference:
         params["speaker_preference"] = preference.fingerprint

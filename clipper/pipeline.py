@@ -90,7 +90,7 @@ def run(source: str, out_root: Path, settings: Settings, options: Options, chat:
     highlights = detect_mod.detect(
         transcript, peaks, llm.build(settings), options.max_clips,
         options.min_dur, options.max_dur, cache, excluded=excluded, preference=preference,
-        window_seconds=options.llm_window_seconds,
+        window_seconds=options.llm_window_seconds, content_type=content_type,
     )
     latest = src.workdir / "highlights.json"
     if not options.batch or not latest.exists():

@@ -45,11 +45,18 @@ clipper run gravacao-da-live.mp4 --chat chat.json
 clipper run "https://www.youtube.com/watch?v=..." --content-type gameplay
 ```
 
-### Podcast ou gameplay
+### Podcast, gameplay, anime ou missa
 
-Em `auto` (padrão), títulos com termos de jogo — como `gameplay`, `GTA`, `Fortnite` e `jogando` — usam o layout de gameplay. Ele mantém a tela inteira dentro do vídeo vertical, com fundo desfocado; HUD, mapa e placar não são cortados. Os demais vídeos usam o enquadramento atual de podcast, que acompanha o rosto.
+Em `auto` (padrão), títulos com termos de jogo — como `gameplay`, `GTA`, `Fortnite` e `jogando` — usam o layout de gameplay. Títulos de anime e de missa também são reconhecidos. Esses três modos mantêm a tela inteira dentro do vídeo vertical, com fundo desfocado: HUD, arte, legendas já presentes, altar e congregação não são cortados. Os demais vídeos usam o enquadramento atual de podcast, que acompanha o rosto.
 
-Em caso ambíguo, escolha manualmente `--content-type gameplay` ou `--content-type podcast`. O `clips.json` de cada lote registra o tipo aplicado.
+Em caso ambíguo, escolha manualmente `--content-type gameplay`, `--content-type anime`, `--content-type mass` ou `--content-type podcast`. O `clips.json` de cada lote registra o tipo aplicado.
+
+Para anime, a seleção favorece diálogo marcante, revelação e virada emocional sem inventar ação visual que não esteja na transcrição. Para missa, privilegia homilia, Evangelho, oração ou reflexão completa, com contexto e linguagem respeitosa. Se o anime já tiver legendas no vídeo, use `--no-captions` para não cobri-las:
+
+```bash
+clipper run "URL_DO_ANIME" --content-type anime --no-captions --lang pt
+clipper run "URL_DA_MISSA" --content-type mass --lang pt
+```
 
 ### Mais cortes de 1 a 3 minutos, preservando os anteriores
 

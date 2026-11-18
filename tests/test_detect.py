@@ -33,6 +33,22 @@ def test_candidates_per_window_keeps_a_small_pool():
     assert candidates_per_window(8, 12) == 2
 
 
+def test_anime_and_mass_add_editorial_guidance(tmp_path):
+    transcript = Transcript(words=[Word("Uma", 0, 1), Word("frase.", 1, 2)] * 20,
+                            language="pt", duration=30)
+    prompts = []
+
+    def ask(system, user, schema):
+        prompts.append(system)
+        return {"highlights": []}
+
+    for content_type in ("anime", "mass"):
+        detect(transcript, [], ask, 1, 10, 20, tmp_path / f"{content_type}.json",
+               content_type=content_type)
+    assert "Anime-specific" in prompts[0]
+    assert "Mass-specific" in prompts[1]
+
+
 def test_format_lines_breaks_on_sentence_end():
     text = format_lines(make_words("Olha isso. Ninguém fala disso!"))
     assert text.splitlines() == ["[0.0] Olha isso.", "[1.0] Ninguém fala disso!"]

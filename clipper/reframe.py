@@ -25,14 +25,26 @@ GAMEPLAY_PATTERN = re.compile(
     r"league\s+of\s+legends|lol\b|fifa|ea\s*sports|free\s*fire)\b",
     re.IGNORECASE,
 )
+ANIME_PATTERN = re.compile(
+    r"\b(anime|anim[eé]|mang[aá]|otaku|dublado|legendado|epis[oó]dio|ep\.?)\b",
+    re.IGNORECASE,
+)
+MASS_PATTERN = re.compile(
+    r"\b(santa\s+missa|missa|homilia|evangelho|liturgia|celebra[cç][aã]o|padre|par[oó]quia)\b",
+    re.IGNORECASE,
+)
 
 
 def resolve_content_type(title: str, requested: str = "auto") -> str:
     """Choose a safe default layout; manual selection always takes precedence."""
-    if requested not in {"auto", "podcast", "gameplay"}:
-        raise ValueError("content type must be auto, podcast or gameplay")
+    if requested not in {"auto", "podcast", "gameplay", "anime", "mass"}:
+        raise ValueError("content type must be auto, podcast, gameplay, anime or mass")
     if requested != "auto":
         return requested
+    if MASS_PATTERN.search(title or ""):
+        return "mass"
+    if ANIME_PATTERN.search(title or ""):
+        return "anime"
     return "gameplay" if GAMEPLAY_PATTERN.search(title or "") else "podcast"
 
 
@@ -175,7 +187,7 @@ def sample_faces(video: Path, start: float, end: float, face_model: str,
 
 def plan(video: Path, start: float, end: float, face_model: str = "", min_face_ratio: float = 0.4,
          content_type: str = "podcast") -> Framing:
-    if content_type == "gameplay":
+    if content_type in {"gameplay", "anime", "mass"}:
         import cv2
         cap = cv2.VideoCapture(str(video))
         src_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -183,8 +195,9 @@ def plan(video: Path, start: float, end: float, face_model: str = "", min_face_r
         cap.release()
         if src_w <= 0 or src_h <= 0:
             raise ValueError(f"could not read video dimensions: {video}")
-        # Never crop a game capture: preserve HUD, minimap, subtitles and the entire action.
-        return Framing(mode="gameplay", src_w=src_w, src_h=src_h)
+        # Keep contextual visual information: HUD and action, animated art/subtitles,
+        # or the altar and congregation in a church wide shot.
+        return Framing(mode=content_type, src_w=src_w, src_h=src_h)
     src_w, src_h, times, centers = sample_faces(video, start, end, face_model)
     crop_w = even(src_h * TARGET_RATIO)
     if crop_w >= src_w or src_w / max(src_h, 1) <= TARGET_RATIO + 0.01:
