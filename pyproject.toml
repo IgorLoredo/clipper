@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clipper"
+version = "0.1.0"
+description = "Turn long videos and live VODs into vertical viral clips (TikTok, Shorts, Reels)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    "numpy>=1.26",
+    "opencv-python>=4.9",
+    "yt-dlp>=2025.1.1",
+    "faster-whisper>=1.1.0",
+    "av>=11,<19",  # faster-whisper 1.2.1 uses metadata_errors, removed in PyAV 19
+    "imageio-ffmpeg>=0.5.1",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.70.0"]
+openai = ["openai>=1.60.0"]
+deepseek = ["openai>=1.60.0"]
+diarization = ["sherpa-onnx>=2.0.1"]
+gemini = ["google-genai>=1.30.0"]
+all = ["clipper[anthropic,openai,gemini]"]
+dev = ["pytest>=8", "clipper[all]"]
+
+[project.scripts]
+clipper = "clipper.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["clipper*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

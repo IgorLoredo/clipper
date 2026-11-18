@@ -1,0 +1,7 @@
+{
+  "turns": [
+    {"start": 0.0, "end": 60.0, "speaker": "Participante A"},
+    {"start": 60.0, "end": 120.0, "speaker": "Participante B"},
+    {"start": 120.0, "end": 180.0, "speaker": "Participante A"}
+  ]
+}
