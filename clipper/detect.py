@@ -31,8 +31,8 @@ Rules:
 - Clips must not overlap each other.
 - Score 0-100 for viral potential only, not general quality. Be strict: most moments are below 60.
 - Return at most {per_chunk} clips. Return fewer, or none, if the excerpt has nothing strong.
-- Write "title" and "hook" in the transcript's language ({language}). The title is a short social media caption, max 70 characters.
-- "reason" explains in one sentence why the clip would perform."""
+- Write "title" and "hook" in the transcript's language ({language}). The title is a short social media caption, max 70 characters; the hook has at most 16 words.
+- "reason" explains in at most 20 words why the clip would perform."""
 
 SCHEMA = {
     "type": "object",
@@ -260,18 +260,25 @@ def _usage_summary(done: dict[str, dict], keys: list[str]) -> str:
     return ", ".join(f"{label} x{n}" for label, n in counts.items())
 
 
+def candidates_per_window(max_clips: int, window_count: int) -> int:
+    """Keep a small, diverse pool without paying to generate dozens of losers."""
+    return max(1, min(4, (max_clips + max(1, window_count) - 1) // max(1, window_count) + 1))
+
+
 def detect(transcript: Transcript, peaks: list[Peak], llm: JsonLLM, max_clips: int,
            min_dur: float, max_dur: float, cache: Path,
            excluded: tuple[tuple[float, float], ...] = (),
-           preference: SpeakerPreference | None = None) -> list[Highlight]:
-    spans = windows(transcript.duration)
-    per_chunk = max(3, min(8, max_clips))
+           preference: SpeakerPreference | None = None,
+           window_seconds: float = 900.0) -> list[Highlight]:
+    spans = windows(transcript.duration, size=window_seconds)
+    per_chunk = candidates_per_window(max_clips, len(spans))
     system = SYSTEM_PROMPT.format(min_dur=int(min_dur), max_dur=int(max_dur),
                                   per_chunk=per_chunk, language=transcript.language)
     if preference:
         system += preference.prompt()
     params = {"min_dur": min_dur, "max_dur": max_dur, "per_chunk": per_chunk,
               "max_clips": max_clips, "excluded": [list(span) for span in excluded],
+              "window_seconds": window_seconds,
               "signals_fingerprint": hashlib.sha256(json.dumps([asdict(p) for p in peaks], sort_keys=True).encode()).hexdigest()}
     if preference:
         params["speaker_preference"] = preference.fingerprint

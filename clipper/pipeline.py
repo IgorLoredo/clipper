@@ -29,6 +29,7 @@ class Options:
     speaker_mode: str = "prefer"
     speaker_weight: float = 0.25
     content_type: str = "auto"
+    llm_window_seconds: float = 900.0
 
 
 def existing_ranges(workdir: Path) -> tuple[tuple[float, float], ...]:
@@ -89,6 +90,7 @@ def run(source: str, out_root: Path, settings: Settings, options: Options, chat:
     highlights = detect_mod.detect(
         transcript, peaks, llm.build(settings), options.max_clips,
         options.min_dur, options.max_dur, cache, excluded=excluded, preference=preference,
+        window_seconds=options.llm_window_seconds,
     )
     latest = src.workdir / "highlights.json"
     if not options.batch or not latest.exists():

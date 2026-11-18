@@ -146,7 +146,24 @@ ollama pull qwen3:4b         # ou .\\tools\\ollama\\ollama.exe pull qwen3:4b
 clipper run live.mp4 --llm ollama:qwen3:4b
 ```
 
-O conector usa JSON estruturado, desativa o modo de raciocínio exibido e limita cada resposta a 4.096 tokens. Em CPU, modelos menores como `qwen3:4b` são a opção mais prática; eles tendem a levar mais tempo que uma API. Combine-o com provedores pagos somente se quiser fallback: `--llm ollama:qwen3:4b,gemini:gemini-3.6-flash`.
+O conector usa JSON estruturado, desativa o modo de raciocínio exibido e limita cada resposta a 1.200 tokens por padrão. Em CPU, modelos menores como `qwen3:4b` são a opção mais prática; eles tendem a levar mais tempo que uma API. Combine-o com provedores pagos somente se quiser fallback: `--llm ollama:qwen3:4b,gemini:gemini-3.6-flash`.
+
+### Perfil para notebook e uso econômico de tokens
+
+Por padrão, cada resposta de LLM agora é limitada a 1.200 tokens e pede poucos candidatos por janela; o projeto não gasta milhares de tokens explicando cortes que serão descartados. Ajuste apenas se o modelo estiver truncando JSON:
+
+```bash
+clipper run live.mp4 --llm-output-tokens 1600
+```
+
+Para rodar inteiramente no notebook, instale o Ollama, baixe uma vez o modelo e use o perfil local. Ele usa `qwen3:4b`, contexto de 8k, saída de 768 tokens e janelas de 5 minutos — configuração mais realista para 16 GB de RAM, sem consumo de API:
+
+```bash
+ollama pull qwen3:4b
+clipper run live.mp4 --notebook --lang pt --max-clips 6
+```
+
+Em notebooks com 8 GB de RAM, prefira `qwen3:1.7b` e transcrição `base`: `WHISPER_MODEL=base` e `clipper run live.mp4 --notebook --llm ollama:qwen3:1.7b`. Os resultados locais tendem a ser menos seletivos que modelos de API; uma combinação econômica é usar o Ollama para rascunhos e Gemini/DeepSeek somente para a seleção final.
 
 ### Fallback entre LLMs (cota ou créditos acabando)
 

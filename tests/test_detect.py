@@ -1,4 +1,4 @@
-from clipper.detect import Highlight, dedupe, detect, progress_path, format_lines, format_hints, parse_highlights, snap, windows
+from clipper.detect import Highlight, candidates_per_window, dedupe, detect, progress_path, format_lines, format_hints, parse_highlights, snap, windows
 import json
 
 import pytest
@@ -25,6 +25,12 @@ def test_windows_long_video_overlap_and_cover_end():
     assert spans[0] == (0.0, 900)
     assert spans[1][0] == 840
     assert spans[-1][1] == 2000
+
+
+def test_candidates_per_window_keeps_a_small_pool():
+    assert candidates_per_window(8, 1) == 4
+    assert candidates_per_window(8, 4) == 3
+    assert candidates_per_window(8, 12) == 2
 
 
 def test_format_lines_breaks_on_sentence_end():

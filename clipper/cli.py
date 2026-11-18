@@ -33,6 +33,12 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--speaker-weight", type=float, default=0.25, help="speaker share weight in ranking, from 0 to 1 (default: 0.25)")
     run_p.add_argument("--content-type", choices=("auto", "podcast", "gameplay"), default="auto",
                        help="layout: auto detects game titles; gameplay preserves the full game screen")
+    run_p.add_argument("--llm-window-seconds", type=int, default=None, metavar="SECONDS",
+                       help="transcript span per LLM call (default: 900; use 300 on a notebook)")
+    run_p.add_argument("--llm-output-tokens", type=int, default=None, metavar="TOKENS",
+                       help="maximum output tokens per LLM call (default: 1200)")
+    run_p.add_argument("--notebook", action="store_true",
+                       help="local low-memory profile: Ollama qwen3:4b, 5-min windows and 8k context")
     run_p.add_argument("--llm", default=None, metavar="PROVIDER[:MODEL][,...]",
                        help="override LLM_PROVIDER; a comma list is a fallback chain, "
                             f"e.g. anthropic,openai:gpt-5-mini,ollama ({', '.join(PROVIDERS)})")
@@ -88,7 +94,20 @@ def main(argv: list[str] | None = None) -> int:
             build_parser().error("speaker-weight must be between 0 and 1")
     settings = Settings.from_env()
     if args.command == "run":
+        if args.llm_window_seconds is not None and not 120 <= args.llm_window_seconds <= 1800:
+            build_parser().error("llm-window-seconds must be between 120 and 1800")
+        if args.llm_output_tokens is not None and not 128 <= args.llm_output_tokens <= 4096:
+            build_parser().error("llm-output-tokens must be between 128 and 4096")
+        if args.notebook and args.llm is None:
+            args.llm = "ollama:qwen3:4b"
         settings = settings.with_llm(args.llm)
+        if args.notebook:
+            settings = settings.with_limits(
+                args.llm_output_tokens or 768,
+                8192,
+            )
+        elif args.llm_output_tokens is not None:
+            settings = settings.with_limits(args.llm_output_tokens)
         unknown = [provider for provider, _ in settings.llm_chain if provider not in PROVIDERS]
         if unknown:
             build_parser().error(f"unknown LLM provider {unknown[0]!r}; use one of: {', '.join(PROVIDERS)}")
@@ -97,7 +116,8 @@ def main(argv: list[str] | None = None) -> int:
                           batch=args.batch, exclude_existing=args.exclude_existing,
                           prefer_speaker=args.prefer_speaker, speaker_turns=args.speaker_turns,
                           speaker_mode=args.speaker_mode, speaker_weight=args.speaker_weight,
-                          content_type=args.content_type)
+                          content_type=args.content_type,
+                          llm_window_seconds=args.llm_window_seconds or (300.0 if args.notebook else 900.0))
         try:
             workdir = run(args.source, Path(args.out), settings, options, args.chat)
         except FileNotFoundError as exc:

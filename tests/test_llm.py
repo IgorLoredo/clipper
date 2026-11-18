@@ -52,6 +52,11 @@ def test_cli_parses_llm_flag():
     assert args.llm == "openai:gpt-5"
 
 
+def test_cli_parses_notebook_profile():
+    args = build_parser().parse_args(["run", "x.mp4", "--notebook"])
+    assert args.notebook is True and args.llm_window_seconds is None
+
+
 def test_openai_compatible_sends_strict_schema_and_parses(monkeypatch):
     captured = {}
 
@@ -215,7 +220,7 @@ def test_deepseek_json_mode_and_incomplete_output(monkeypatch, finish_reason, co
     assert captured["base_url"] == llm.DEEPSEEK_URL
     assert captured["response_format"] == {"type": "json_object"}
     assert "JSON Schema" in captured["messages"][0]["content"]
-    assert captured["max_tokens"] == 8192
+    assert captured["max_tokens"] == 1200
     assert captured["model"] == DEFAULT_MODELS["deepseek"]
 
 
