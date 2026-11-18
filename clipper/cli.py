@@ -39,6 +39,12 @@ def build_parser() -> argparse.ArgumentParser:
                        help="maximum output tokens per LLM call (default: 1200)")
     run_p.add_argument("--notebook", action="store_true",
                        help="local low-memory profile: Ollama qwen3:4b, 5-min windows and 8k context")
+    run_p.add_argument("--campaign", type=Path, default=None, metavar="BRIEF.json",
+                       help="campaign brief; selects and reviews clips against its requirements")
+    run_p.add_argument("--review-llm", default=None, metavar="PROVIDER[:MODEL][,...]",
+                       help="independent LLM chain for the campaign review (defaults to --llm)")
+    run_p.add_argument("--review-mode", choices=("strict", "warn"), default="strict",
+                       help="strict renders only approved clips; warn keeps all and records the audit")
     run_p.add_argument("--llm", default=None, metavar="PROVIDER[:MODEL][,...]",
                        help="override LLM_PROVIDER; a comma list is a fallback chain, "
                             f"e.g. anthropic,openai:gpt-5-mini,ollama ({', '.join(PROVIDERS)})")
@@ -90,6 +96,8 @@ def main(argv: list[str] | None = None) -> int:
             build_parser().error("speaker-mode only requires --prefer-speaker and --speaker-turns")
         if args.speaker_turns and not args.speaker_turns.is_file():
             build_parser().error(f"speaker timeline not found: {args.speaker_turns}")
+        if args.campaign and not args.campaign.is_file():
+            build_parser().error(f"campaign brief not found: {args.campaign}")
         if not math.isfinite(args.speaker_weight) or not 0 <= args.speaker_weight <= 1:
             build_parser().error("speaker-weight must be between 0 and 1")
     settings = Settings.from_env()
@@ -117,7 +125,8 @@ def main(argv: list[str] | None = None) -> int:
                           prefer_speaker=args.prefer_speaker, speaker_turns=args.speaker_turns,
                           speaker_mode=args.speaker_mode, speaker_weight=args.speaker_weight,
                           content_type=args.content_type,
-                          llm_window_seconds=args.llm_window_seconds or (300.0 if args.notebook else 900.0))
+                          llm_window_seconds=args.llm_window_seconds or (300.0 if args.notebook else 900.0),
+                          campaign_file=args.campaign, review_llm=args.review_llm, review_mode=args.review_mode)
         try:
             workdir = run(args.source, Path(args.out), settings, options, args.chat)
         except FileNotFoundError as exc:

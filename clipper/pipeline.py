@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from clipper import detect as detect_mod
-from clipper import attention, llm, reframe, signals
+from clipper import attention, campaign, llm, reframe, signals
 from clipper.captions import build_ass
 from clipper.config import Settings
 from clipper.detect import Highlight
@@ -30,6 +30,9 @@ class Options:
     speaker_weight: float = 0.25
     content_type: str = "auto"
     llm_window_seconds: float = 900.0
+    campaign_file: Path | None = None
+    review_llm: str | None = None
+    review_mode: str = "strict"
 
 
 def existing_ranges(workdir: Path) -> tuple[tuple[float, float], ...]:
@@ -58,6 +61,7 @@ def next_variant(workdir: Path, variant: str) -> str:
 
 
 def run(source: str, out_root: Path, settings: Settings, options: Options, chat: str | None = None) -> Path:
+    brief = campaign.load(options.campaign_file) if options.campaign_file else None
     if options.prefer_speaker:
         if options.speaker_turns is None:
             raise ValueError("speaker preference requires a speaker timeline; Whisper does not identify speakers")
@@ -91,7 +95,19 @@ def run(source: str, out_root: Path, settings: Settings, options: Options, chat:
         transcript, peaks, llm.build(settings), options.max_clips,
         options.min_dur, options.max_dur, cache, excluded=excluded, preference=preference,
         window_seconds=options.llm_window_seconds, content_type=content_type,
+        campaign_context=brief.summary() if brief else "",
     )
+    if brief:
+        reviewer_settings = settings.with_llm(options.review_llm) if options.review_llm else settings
+        review_key = f"campaign-review-{brief.fingerprint}-{hashlib.sha256(cache.read_bytes()).hexdigest()[:10]}.json"
+        reviews = campaign.review(brief, highlights, transcript, llm.build(reviewer_settings), src.workdir / review_key)
+        for highlight, assessment in zip(highlights, reviews):
+            highlight.campaign_review = assessment
+        approved = sum(bool(review["approved"]) for review in reviews)
+        print(f"[campaign] {approved}/{len(highlights)} clips approved by {reviewer_settings.llm_provider}", flush=True)
+        if options.review_mode == "strict":
+            highlights = [highlight for highlight in highlights if highlight.campaign_review and highlight.campaign_review["approved"]]
+            print(f"[campaign] strict mode will render {len(highlights)} approved clips", flush=True)
     latest = src.workdir / "highlights.json"
     if not options.batch or not latest.exists():
         shutil.copyfile(cache, latest)

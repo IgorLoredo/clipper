@@ -57,6 +57,13 @@ def test_cli_parses_notebook_profile():
     assert args.notebook is True and args.llm_window_seconds is None
 
 
+def test_cli_parses_campaign_review_options():
+    args = build_parser().parse_args(["run", "x.mp4", "--campaign", "brief.json",
+                                      "--review-llm", "gemini", "--review-mode", "warn"])
+    assert str(args.campaign) == "brief.json"
+    assert args.review_llm == "gemini" and args.review_mode == "warn"
+
+
 def test_openai_compatible_sends_strict_schema_and_parses(monkeypatch):
     captured = {}
 

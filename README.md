@@ -68,6 +68,20 @@ O vídeo, a transcrição e os sinais já salvos são reaproveitados. `--exclude
 
 Os novos vídeos vão para `clips/longos/`. Se essa pasta já existir, a próxima será `clips/longos-02/`, depois `longos-03/`, sem sobrescrever os vídeos ou manifestos anteriores. Isso também vale para `render`. Com `--batch`, o `highlights.json` existente é preservado; a nova seleção fica no arquivo `highlights.<llm>-<duracao>-n<quantidade>[...].json`.
 
+### Brief e revisão para campanhas de clipping
+
+Use um brief JSON para informar à seleção o objetivo, público, duração, termos obrigatórios/proibidos, hashtags e regras da campanha. Depois de selecionar os candidatos, uma segunda LLM faz uma auditoria independente. Em `strict` (padrão), só os aprovados são renderizados; em `warn`, todos são renderizados, mas cada `clips.json` inclui a auditoria para revisão humana.
+
+Comece copiando [examples/campaign-brief.example.json](examples/campaign-brief.example.json) e ajuste os requisitos. Exemplo usando uma LLM diferente para revisar:
+
+```bash
+clipper run "URL_DO_VIDEO" --campaign campanha.json \
+  --llm ollama:qwen3:4b --review-llm gemini:gemini-3.6-flash \
+  --review-mode strict --lang pt
+```
+
+O arquivo `campaign-review-*.json` no diretório do vídeo registra decisão, nota, motivos, título, legenda e hashtags sugeridos para cada corte. Regras objetivas são conferidas sem LLM: duração, presença literal de `required_terms` na fala e ausência de `forbidden_terms`. A revisão por LLM verifica adequação editorial, contexto, tom e instruções que não podem ser avaliadas apenas por texto literal. Revise o resultado antes de publicar: o revisor não substitui aprovação da marca nem as regras da plataforma.
+
 ### Preferência por participante
 
 A seleção pode priorizar as falas de um participante ou aceitar somente falas dele. Essa preferência exige marcações de quem fala em cada intervalo: a transcrição atual do Whisper não identifica vozes nem associa nomes automaticamente.

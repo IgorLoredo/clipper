@@ -1,0 +1,12 @@
+{
+  "name": "Campanha exemplo - entrevista",
+  "objective": "Criar Shorts informativos que despertem curiosidade e expliquem uma ideia completa.",
+  "audience": "Brasileiros interessados em empreendedorismo",
+  "language": "pt-BR",
+  "min_duration": 25,
+  "max_duration": 60,
+  "required_terms": [],
+  "forbidden_terms": ["promessa de lucro garantido"],
+  "required_hashtags": ["#empreendedorismo"],
+  "instructions": "Sem afirmações não verificáveis, ataques pessoais ou clickbait enganoso."
+}

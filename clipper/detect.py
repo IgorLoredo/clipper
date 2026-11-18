@@ -81,6 +81,7 @@ class Highlight:
     llm: str = ""
     selection_score: float | None = None
     speaker_focus: dict | None = None
+    campaign_review: dict | None = None
 
     @property
     def duration(self) -> float:
@@ -281,18 +282,22 @@ def detect(transcript: Transcript, peaks: list[Peak], llm: JsonLLM, max_clips: i
            excluded: tuple[tuple[float, float], ...] = (),
            preference: SpeakerPreference | None = None,
            window_seconds: float = 900.0,
-           content_type: str = "podcast") -> list[Highlight]:
+           content_type: str = "podcast",
+           campaign_context: str = "") -> list[Highlight]:
     spans = windows(transcript.duration, size=window_seconds)
     per_chunk = candidates_per_window(max_clips, len(spans))
     system = SYSTEM_PROMPT.format(min_dur=int(min_dur), max_dur=int(max_dur),
                                   per_chunk=per_chunk, language=transcript.language)
     system += CONTENT_GUIDANCE.get(content_type, "")
+    if campaign_context:
+        system += "\nCampaign requirements:\n" + campaign_context + "\nChoose only moments that can honestly fit these requirements.\n"
     if preference:
         system += preference.prompt()
     params = {"min_dur": min_dur, "max_dur": max_dur, "per_chunk": per_chunk,
               "max_clips": max_clips, "excluded": [list(span) for span in excluded],
               "window_seconds": window_seconds,
               "content_type": content_type,
+              "campaign_fingerprint": hashlib.sha256(campaign_context.encode()).hexdigest() if campaign_context else "",
               "signals_fingerprint": hashlib.sha256(json.dumps([asdict(p) for p in peaks], sort_keys=True).encode()).hexdigest()}
     if preference:
         params["speaker_preference"] = preference.fingerprint
