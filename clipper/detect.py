@@ -3,6 +3,7 @@ import hashlib
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from clipper.codex_exchange import CodexResponseRequired
 from clipper.llm import JsonLLM, LLMRefusal, ProvidersExhausted
 from clipper.signals import Peak
 from clipper.transcribe import Transcript, Word
@@ -308,6 +309,7 @@ def detect(transcript: Transcript, peaks: list[Peak], llm: JsonLLM, max_clips: i
         if saved.get("params") == params:
             return [Highlight(**h) for h in json.loads(cache.read_text(encoding="utf-8"))]
     keys = []
+    pending = []
     for index, (start, end) in enumerate(spans, 1):
         if preference and preference.mode == "only" and not any(
                 t.speaker.casefold() == preference.speaker.casefold() and t.start < end and t.end > start
@@ -330,11 +332,16 @@ def detect(transcript: Transcript, peaks: list[Peak], llm: JsonLLM, max_clips: i
                      + json.dumps(already_used))
         try:
             done[key] = _ask_window(llm, system, user, index)
+        except CodexResponseRequired as exc:
+            pending.extend(exc.requests)
+            continue
         except ProvidersExhausted as exc:
             raise ProvidersExhausted(
                 f"all LLMs failed at chunk {index}/{len(spans)}; progress kept in {progress}, "
                 f"run the same command again to resume. Errors: {exc}") from exc
         _save_progress(progress, params, done)
+    if pending:
+        raise CodexResponseRequired(list(dict.fromkeys(pending)))
     if keys:
         print(f"[detect] chunks by LLM: {_usage_summary(done, keys)}", flush=True)
     candidates = _snap_all(done, keys, transcript, min_dur, max_dur, preference)

@@ -143,6 +143,40 @@ clipper run live.mp4 --llm deepseek:deepseek-flash,deepseek:deepseek-v4-pro,gemi
 
 O suporte direto ao DeepSeek usa [JSON Output](https://api-docs.deepseek.com/guides/json_mode/) e pode ser instalado com `pip install -e ".[deepseek]"`. Chave ausente, saldo esgotado, limite de uso, modelo indisponível e saída truncada por limite de tokens fazem a cadeia tentar a próxima entrada. O progresso de cada janela concluída fica salvo. Modelos do mesmo provedor podem compartilhar saldo: nesse caso, é preciso ter outro provedor configurado com saldo ou cota disponível.
 
+### Selecionar cortes no Codex
+
+Abra este repositório no Codex e peça à skill `$clipper-cortes` para gerar
+cortes de um arquivo local ou de uma URL. A [skill do projeto](.agents/skills/clipper-cortes/SKILL.md)
+descreve como o Codex responde aos pedidos e retoma a execução. Para analisar um
+vídeo do YouTube desde o início, use a URL sem o parâmetro `t`.
+
+Para iniciar pelo terminal, ative o ambiente Python do projeto e execute:
+
+```bash
+python -m clipper run live.mp4 --llm codex
+```
+
+O código de saída `3` indica que o Clipper aguarda os pedidos JSON listados em
+`out/<video>/codex-llm/` antes de renderizar.
+Para cada `*.request.json` listado, a skill lê o prompt e grava o objeto definido
+pelo schema em `*.response.json` com o mesmo identificador. Ao repetir o comando,
+o Clipper valida as respostas e aproveita as janelas já concluídas. Com
+`--campaign`, o mesmo fluxo também atende à revisão antes da renderização.
+O modo Codex dispensa chave de API de LLM no Clipper.
+
+No Windows, se o Whisper detectar uma GPU mas falhar ao carregar
+`cublas64_12.dll`, rode em CPU. Por exemplo, no PowerShell:
+
+```powershell
+$env:WHISPER_DEVICE = 'cpu'
+$env:WHISPER_MODEL = 'base'
+python -m clipper run live.mp4 --llm codex --lang pt
+```
+
+Confira os MP4 e o manifesto `clips.json` do lote antes de publicar. As
+legendas usam a transcrição automática. Se algum corte sair vazio, compare os
+tempos do manifesto com a duração do arquivo de origem.
+
 ### Comparar LLMs no mesmo vídeo
 
 A transcrição fica em cache, então só a escolha dos cortes roda de novo:

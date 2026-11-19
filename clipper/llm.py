@@ -4,6 +4,7 @@ import urllib.request
 from functools import partial
 from typing import Callable
 
+from clipper.codex_exchange import CodexExchange, CodexResponseRequired
 from clipper.config import Settings
 
 JsonLLM = Callable[[str, str, dict], dict]
@@ -42,7 +43,7 @@ class LLMChain:
                     self._call = factory()
                     print(f"[llm] using {label}", flush=True)
                 return self._call(system, user, schema)
-            except LLMRefusal:
+            except (LLMRefusal, CodexResponseRequired):
                 raise
             except Exception as exc:
                 self._drop(label, exc)
@@ -203,6 +204,7 @@ PROVIDERS: dict[str, Callable[[Settings, str], JsonLLM]] = {
     "openrouter": lambda s, m: _openrouter(m, s.llm_max_output_tokens),
     "ollama": lambda s, m: _ollama(m, s.ollama_url, s.llm_max_output_tokens,
                                      s.ollama_context_tokens),
+    "codex": lambda s, m: CodexExchange(s.codex_directory, m),
 }
 
 

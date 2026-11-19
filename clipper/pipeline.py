@@ -1,7 +1,7 @@
 import json
 import hashlib
 import shutil
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from clipper import detect as detect_mod
@@ -68,6 +68,7 @@ def run(source: str, out_root: Path, settings: Settings, options: Options, chat:
         load_preference(options.speaker_turns, options.prefer_speaker, mode=options.speaker_mode,
                         weight=options.speaker_weight)
     src = fetch(source, out_root, chat)
+    settings = replace(settings, codex_directory=src.workdir / "codex-llm")
     print(f"[run] workdir {src.workdir}", flush=True)
     transcript = transcribe(src.video, src.workdir / "transcript.json", settings, options.language)
     content_type = reframe.resolve_content_type(src.title, options.content_type)
@@ -100,6 +101,9 @@ def run(source: str, out_root: Path, settings: Settings, options: Options, chat:
     if brief:
         reviewer_settings = settings.with_llm(options.review_llm) if options.review_llm else settings
         review_key = f"campaign-review-{brief.fingerprint}-{hashlib.sha256(cache.read_bytes()).hexdigest()[:10]}.json"
+        if any(provider == "codex" for provider, _ in reviewer_settings.llm_chain):
+            reviewer_id = hashlib.sha256(repr(reviewer_settings.llm_chain).encode()).hexdigest()[:10]
+            review_key = review_key.removesuffix(".json") + f"-{reviewer_id}.json"
         reviews = campaign.review(brief, highlights, transcript, llm.build(reviewer_settings), src.workdir / review_key)
         for highlight, assessment in zip(highlights, reviews):
             highlight.campaign_review = assessment

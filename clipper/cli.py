@@ -3,6 +3,7 @@ import sys
 import math
 from pathlib import Path
 
+from clipper.codex_exchange import CodexResponseRequired
 from clipper.config import Settings, load_dotenv
 from clipper.llm import PROVIDERS, ProvidersExhausted
 from clipper.pipeline import Options, rerender, run
@@ -129,6 +130,10 @@ def main(argv: list[str] | None = None) -> int:
                           campaign_file=args.campaign, review_llm=args.review_llm, review_mode=args.review_mode)
         try:
             workdir = run(args.source, Path(args.out), settings, options, args.chat)
+        except CodexResponseRequired as exc:
+            print(f"[codex] {exc}\nAnswer the requests and rerun the same command to resume.",
+                  file=sys.stderr, flush=True)
+            return 3
         except FileNotFoundError as exc:
             print(f"[error] video not found: {exc}. Pass a URL (https://...) or the path of a video file.",
                   file=sys.stderr, flush=True)

@@ -9,6 +9,7 @@ DEFAULT_MODELS = {
     "deepseek": "deepseek-flash",
     "openrouter": "google/gemini-2.5-flash",
     "ollama": "qwen3:8b",
+    "codex": "skill",
 }
 
 
@@ -45,6 +46,7 @@ class Settings:
     whisper_model: str = ""
     whisper_device: str = ""
     face_model: str = ""
+    codex_directory: Path = Path(".clipper-codex")
 
     @classmethod
     def from_env(cls) -> "Settings":
