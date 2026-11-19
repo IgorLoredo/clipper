@@ -347,7 +347,7 @@ def detect(transcript: Transcript, peaks: list[Peak], llm: JsonLLM, max_clips: i
                 f"run the same command again to resume. Errors: {exc}") from exc
         _save_progress(progress, params, done)
     if pending:
-        raise CodexResponseRequired(list(dict.fromkeys(pending)))
+        raise CodexResponseRequired(list(dict.fromkeys(pending)), "selection")
     if keys:
         print(f"[detect] chunks by LLM: {_usage_summary(done, keys)}", flush=True)
     candidates = _snap_all(done, keys, transcript, min_dur, max_dur, preference)

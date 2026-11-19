@@ -11,7 +11,7 @@ import numpy as np
 
 from clipper.codex_exchange import CodexExchange
 from clipper.detect import Highlight, dedupe, overlap_ratio
-from clipper.signals import Peak
+from clipper.signals import Peak, find_peaks
 from clipper.transcribe import Transcript
 
 SYSTEM = """Review gameplay candidates using their transcript excerpts and labeled frame grids.
@@ -30,12 +30,21 @@ SCHEMA = {"type": "object", "required": ["clips"], "additionalProperties": False
 }}
 
 
-def _sheet(capture, path: Path, start: float, end: float) -> str | None:
+def _sample_times(start: float, end: float, peaks: list[Peak]) -> list[float]:
+    span = end - start
+    offsets = [min(0.3, span / 10), span * 0.2, span * 0.4, span * 0.6,
+               span * 0.8, span - min(0.5, span / 10)]
+    inside = [peak for peak in peaks if start <= peak.time <= end]
+    if inside:
+        strongest = max(inside, key=lambda peak: peak.strength)
+        offsets[3] = strongest.time - start
+    return [start + max(0.0, min(span, offset)) for offset in offsets]
+
+
+def _sheet(capture, path: Path, start: float, end: float, peaks: list[Peak]) -> str | None:
     if not path.is_file():
         frames = []
-        span = end - start
-        for offset in (min(0.3, span / 8), min(2, span / 3), span / 2, span - min(0.5, span / 8)):
-            time = start + offset
+        for time in _sample_times(start, end, peaks):
             capture.set(cv2.CAP_PROP_POS_MSEC, time * 1000)
             ok, frame = capture.read()
             if not ok:
@@ -47,10 +56,12 @@ def _sheet(capture, path: Path, start: float, end: float) -> str | None:
             tile = np.zeros((180, 320, 3), dtype=np.uint8)
             y, x = (180 - resized.shape[0]) // 2, (320 - resized.shape[1]) // 2
             tile[y:y + resized.shape[0], x:x + resized.shape[1]] = resized
-            cv2.rectangle(tile, (0, 155), (100, 179), (0, 0, 0), -1)
-            cv2.putText(tile, f"{time:.1f}s", (6, 173), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            cv2.rectangle(tile, (0, 151), (319, 179), (0, 0, 0), -1)
+            minutes, seconds = divmod(time, 60)
+            cv2.putText(tile, f"{int(minutes):02d}:{seconds:04.1f}", (8, 172),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.62, (255, 255, 255), 2)
             frames.append(tile)
-        grid = np.vstack((np.hstack(frames[:2]), np.hstack(frames[2:])))
+        grid = np.vstack((np.hstack(frames[:3]), np.hstack(frames[3:])))
         ok, jpeg = cv2.imencode(".jpg", grid, [cv2.IMWRITE_JPEG_QUALITY, 85])
         if not ok:
             return None
@@ -64,13 +75,43 @@ def _sheet(capture, path: Path, start: float, end: float) -> str | None:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _visual_peaks(capture, duration: float) -> list[Peak]:
+    """Find scene/motion changes locally, capped to keep long videos inexpensive."""
+    step = max(1.0, duration / 1200.0)
+    scores, previous_gray, previous_hist = [], None, None
+    time = 0.0
+    while time < duration:
+        capture.set(cv2.CAP_PROP_POS_MSEC, time * 1000)
+        ok, frame = capture.read()
+        if not ok:
+            scores.append(0.0)
+            time += step
+            continue
+        small = cv2.resize(frame, (160, 90), interpolation=cv2.INTER_AREA)
+        gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        hist = cv2.calcHist([small], [0, 1], None, [16, 16], [0, 256, 0, 256])
+        cv2.normalize(hist, hist)
+        if previous_gray is None:
+            score = 0.0
+        else:
+            motion = float(np.mean(cv2.absdiff(gray, previous_gray))) / 255.0
+            scene = float(cv2.compareHist(previous_hist, hist, cv2.HISTCMP_BHATTACHARYYA))
+            score = motion + 0.65 * scene
+        scores.append(score)
+        previous_gray, previous_hist = gray, hist
+        time += step
+    if len(scores) < 3:
+        return []
+    return find_peaks(np.asarray(scores), step, "visual", threshold=2.0, min_gap=18.0, limit=8)
+
+
 def _peak_clips(peaks: list[Peak], duration: float, min_dur: float, max_dur: float,
                 existing: list[Highlight]) -> list[Highlight]:
     length = min(duration, max_dur, max(min_dur, 28.0))
     if length < min_dur:
         return []
     chosen = []
-    for peak in sorted((p for p in peaks if p.kind == "audio" and 0 <= p.time < duration),
+    for peak in sorted((p for p in peaks if p.kind in {"audio", "visual"} and 0 <= p.time < duration),
                        key=lambda p: p.strength, reverse=True):
         start = min(max(0.0, peak.time - length * 0.45), duration - length)
         clip = Highlight(start, start + length, 0, "", "", "")
@@ -93,10 +134,11 @@ def review(video: Path, transcript: Transcript, highlights: list[Highlight], pea
             print("[gameplay] video frames unavailable; using transcript selection", flush=True)
             return highlights[:limit]
         duration = frames / fps
+        review_peaks = peaks + _visual_peaks(capture, duration)
         candidates = [clip for clip in highlights if clip.end <= duration][:12]
         if speaker_weight is None:
             occupied = candidates + [Highlight(a, b, 0, "", "", "") for a, b in excluded]
-            candidates.extend(_peak_clips(peaks, duration, minimum, maximum, occupied))
+            candidates.extend(_peak_clips(review_peaks, duration, minimum, maximum, occupied))
         folder = exchange.directory / "frames"
         folder.mkdir(parents=True, exist_ok=True)
         stat = video.stat()
@@ -105,12 +147,15 @@ def review(video: Path, transcript: Transcript, highlights: list[Highlight], pea
         for index, clip in enumerate(candidates):
             key = f"{video.resolve()}:{stat.st_size}:{stat.st_mtime_ns}:{clip.start}:{clip.end}"
             path = folder / (hashlib.sha256(key.encode()).hexdigest() + ".jpg")
-            digest = _sheet(capture, path, clip.start, clip.end)
+            digest = _sheet(capture, path, clip.start, clip.end, review_peaks)
             if digest:
                 images.append({"index": index, "file": f"frames/{path.name}", "sha256": digest})
+            clip_peaks = [peak for peak in review_peaks if clip.start <= peak.time <= clip.end]
             details.append({"index": index, "start": clip.start, "end": clip.end, "title": clip.title,
                             "has_frames": bool(digest), "transcript": " ".join(
-                                word.text for word in transcript.words_between(clip.start, clip.end))[:1000]})
+                                word.text for word in transcript.words_between(clip.start, clip.end))[:1000],
+                            "signals": [{"time": peak.time, "kind": peak.kind,
+                                         "strength": peak.strength} for peak in clip_peaks]})
     finally:
         capture.release()
     if not images:

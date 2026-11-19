@@ -34,7 +34,8 @@ class Options:
     campaign_file: Path | None = None
     review_llm: str | None = None
     review_mode: str = "strict"
-    visual_review: bool = True
+    visual_review: bool = False
+    visual_review_llm: str = "codex"
 
 
 def existing_ranges(workdir: Path) -> tuple[tuple[float, float], ...]:
@@ -94,7 +95,7 @@ def run(source: str, out_root: Path, settings: Settings, options: Options, chat:
     if preference:
         run_id += f"-speaker-{preference.fingerprint}"
     cache = src.workdir / f"highlights.{run_id}.json"
-    visual_review = options.visual_review and content_type == "gameplay" and settings.llm_provider == "codex"
+    visual_review = options.visual_review and content_type == "gameplay"
     shortlist_size = min(12, options.max_clips + 4) if visual_review else options.max_clips
     if visual_review:
         cache = cache.with_suffix(".shortlist.json")
@@ -107,12 +108,15 @@ def run(source: str, out_root: Path, settings: Settings, options: Options, chat:
     if visual_review:
         from clipper.gameplay import review
 
+        visual_settings = settings.with_llm(options.visual_review_llm)
+        if visual_settings.llm_provider != "codex" or visual_settings.llm_fallbacks:
+            raise ValueError("visual review currently requires --visual-review-llm codex[:model]")
         highlights = review(src.video, transcript, highlights, peaks, excluded,
                             options.min_dur, options.max_dur, options.max_clips,
-                            CodexExchange(settings.codex_directory, settings.model_for("codex")),
+                            CodexExchange(settings.codex_directory, visual_settings.model_for("codex")),
                             speaker_weight=preference.weight if preference else None,
                             campaign_context=brief.summary() if brief else "")
-        run_id += "-visual"
+        run_id += f"-visual-{slugify(visual_settings.model_for('codex'), 30)}"
         cache = src.workdir / f"highlights.{run_id}.json"
         cache.write_text(json.dumps([asdict(clip) for clip in highlights], ensure_ascii=False, indent=2),
                          encoding="utf-8")
