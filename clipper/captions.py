@@ -39,6 +39,7 @@ class CaptionTemplate:
     credit_margin_v: int = 70
     credit: str = ""
     background_mode: str = "blur"
+    layout: str = "standard"
     title_box: bool = True
     credit_box: bool = True
     brand: str = ""
@@ -112,7 +113,10 @@ def load_template(path: Path | None) -> CaptionTemplate:
     if caption_unknown:
         raise ValueError("unknown caption fields: " + ", ".join(caption_unknown))
     style = _caption_style(caption_data)
-    mode = str(data.get("background_mode", "blur"))
+    layout = str(data.get("layout", "standard"))
+    if layout not in {"standard", "framed"}:
+        raise ValueError("template layout must be standard or framed")
+    mode = str(data.get("background_mode", "framed" if layout == "framed" else "blur"))
     if mode not in {"blur", "cover", "framed"}:
         raise ValueError("template background_mode must be blur, cover or framed")
     frame_color = str(data.get("frame_color", "0x00E5FF@0.95"))
@@ -129,7 +133,7 @@ def load_template(path: Path | None) -> CaptionTemplate:
         credit_size=_integer(data, "credit_size", 28, 8),
         credit_color=_ass_color(data.get("credit_color", "&HCCCCCC&"), "credit_color"),
         credit_margin_v=_integer(data, "credit_margin_v", 70, 0), credit=str(data.get("credit", "")),
-        background_mode=mode, title_box=bool(data.get("title_box", True)),
+        background_mode=mode, layout=layout, title_box=bool(data.get("title_box", True)),
         credit_box=bool(data.get("credit_box", True)), brand=str(data.get("brand", "")),
         brand_enabled=bool(data.get("brand_enabled", False)), frame_color=frame_color,
     )

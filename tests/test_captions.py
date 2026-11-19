@@ -64,3 +64,10 @@ def test_template_rejects_unknown_fields_and_unsafe_frame_color(tmp_path):
     path.write_text('{"caption": {"font": "Arial,Injected"}}', encoding="utf-8")
     with pytest.raises(ValueError, match="font"):
         load_template(path)
+
+
+def test_legacy_layout_field_remains_compatible(tmp_path):
+    path = tmp_path / "legacy.json"
+    path.write_text('{"layout": "framed"}', encoding="utf-8")
+    template = load_template(path)
+    assert template.layout == "framed" and template.background_mode == "framed"
