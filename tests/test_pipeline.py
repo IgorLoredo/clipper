@@ -132,3 +132,44 @@ def test_bad_speaker_name_is_rejected_before_download_or_transcription(tmp_path,
     options = pipeline.Options(prefer_speaker="missing", speaker_turns=timeline)
     with pytest.raises(ValueError, match="not present"):
         pipeline.run("url", tmp_path, Settings(), options)
+
+
+def test_template_metadata_and_credit_are_rendered_without_spoken_captions(tmp_path, monkeypatch):
+    template = tmp_path / "template.json"
+    template.write_text(json.dumps({"name": "brand", "background_mode": "framed",
+                                    "title_enabled": True, "credit_enabled": True}), encoding="utf-8")
+    monkeypatch.setattr(pipeline.reframe, "plan", lambda *args, **kwargs: Framing("gameplay", 1920, 1080))
+    captured = {}
+
+    def fake_render(video, start, end, framing, subs, output, *visual):
+        captured["ass"] = subs.read_text(encoding="utf-8")
+        captured["visual"] = visual
+        output.write_bytes(b"video")
+        return output
+
+    monkeypatch.setattr(pipeline, "render_clip", fake_render)
+    source = Source(tmp_path / "video.mp4", "video", tmp_path, None)
+    transcript = Transcript("pt", 30, [Word("fala", 0, 1)])
+    options = pipeline.Options(captions=False, template_file=template, credit="Fonte: Original")
+    pipeline.render_all(source, transcript, [Highlight(0, 20, 90, "Título", "Hook", "Reason")],
+                        Settings(), options, "template", content_type="gameplay")
+    assert "TemplateTitle" in captured["ass"] and "TemplateCredit" in captured["ass"]
+    assert not any(",Main," in line for line in captured["ass"].splitlines() if line.startswith("Dialogue"))
+    assert captured["visual"] == (1080, 1920, "framed", "0x00E5FF@0.95")
+    manifest = json.loads((tmp_path / "clips/template/clips.json").read_text(encoding="utf-8"))
+    assert manifest[0]["template"]["name"] == "brand"
+    assert manifest[0]["template"]["credit"] == "Fonte: Original"
+
+
+def test_rerender_can_limit_to_top_clips(tmp_path, monkeypatch):
+    (tmp_path / "source.json").write_text(json.dumps({"video": str(tmp_path / "video.mp4"),
+                                                       "title": "video"}), encoding="utf-8")
+    Transcript("pt", 60).save(tmp_path / "transcript.json")
+    (tmp_path / "highlights.json").write_text(json.dumps([
+        {"start": 0, "end": 20, "score": 50, "title": "low", "hook": "", "reason": ""},
+        {"start": 20, "end": 40, "score": 90, "title": "high", "hook": "", "reason": ""},
+    ]), encoding="utf-8")
+    captured = []
+    monkeypatch.setattr(pipeline, "render_all", lambda src, tx, clips, *args: captured.extend(clips))
+    pipeline.rerender(tmp_path, Settings(), pipeline.Options(render_limit=1))
+    assert [clip.title for clip in captured] == ["high"]

@@ -58,6 +58,24 @@ clipper run "URL_DO_ANIME" --content-type anime --no-captions --lang pt
 clipper run "URL_DA_MISSA" --content-type mass --lang pt
 ```
 
+### Template visual reutilizável
+
+Use um JSON como [templates/social-credit.json](templates/social-credit.json) para aplicar a mesma identidade visual em diferentes lotes. O template controla resolução, enquadramento, título, marca, legenda animada, cor da moldura e crédito da fonte:
+
+```bash
+clipper run "URL_DO_VIDEO" --template templates/social-credit.json \
+  --credit "Fonte: Canal Original" --lang pt
+```
+
+O título vem do corte escolhido pela LLM. `--no-captions` remove somente a legenda falada: título, marca e crédito continuam visíveis. Para refazer apenas os três melhores cortes sem chamar a LLM:
+
+```bash
+clipper render out/<video> --template templates/social-credit.json \
+  --credit "Fonte: Canal Original" --max-clips 3 --batch identidade-v2
+```
+
+Os modos de fundo aceitos são `blur` (tela completa sobre fundo desfocado), `cover` (preenche e corta as bordas) e `framed` (tela completa dentro de uma moldura). O manifesto `clips.json` registra o template e o crédito utilizados.
+
 ### Mais cortes de 1 a 3 minutos, preservando os anteriores
 
 ```bash

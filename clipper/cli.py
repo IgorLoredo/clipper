@@ -58,12 +58,18 @@ def build_parser() -> argparse.ArgumentParser:
                        help="override LLM_PROVIDER; a comma list is a fallback chain, "
                             f"e.g. anthropic,openai:gpt-5-mini,ollama ({', '.join(PROVIDERS)})")
     _add_render_options(run_p)
+    run_p.add_argument("--template", type=Path, default=None,
+                       help="JSON visual template with title, captions, brand and source credit")
+    run_p.add_argument("--credit", default="", help="source credit shown by the visual template")
 
     render_p = sub.add_parser("render", help="re-render clips from an edited highlights.json")
     render_p.add_argument("workdir", help="folder created by `run` (out/<video>)")
     render_p.add_argument("--batch", default=None, help="name for this new render batch; preserves previous batches")
+    render_p.add_argument("--max-clips", type=int, default=None, help="render only the top N selected clips")
     render_p.add_argument("--content-type", choices=("auto", "podcast", "gameplay", "anime", "mass"), default="auto")
     _add_render_options(render_p)
+    render_p.add_argument("--template", type=Path, default=None, help="JSON visual template")
+    render_p.add_argument("--credit", default="", help="source credit shown by the visual template")
     metrics_p = sub.add_parser("metrics", help="report attention by segment without an LLM or rendering")
     metrics_p.add_argument("workdir", help="existing video output folder")
     metrics_p.add_argument("--source", default=None, help="refresh public replay data from this video URL")
@@ -103,6 +109,10 @@ def main(argv: list[str] | None = None) -> int:
         report = analyze(Path(args.workdir), args.source)
         print(f"[done] metrics in {report} and {report.with_suffix('.md')}", flush=True)
         return 0
+    if getattr(args, "template", None) and not args.template.is_file():
+        build_parser().error(f"template file not found: {args.template}")
+    if args.command == "render" and args.max_clips is not None and args.max_clips < 1:
+        build_parser().error("render max-clips must be positive")
     if args.command == "run" and (args.max_clips < 1 or args.min_dur <= 0 or args.max_dur < args.min_dur):
         build_parser().error("max-clips must be positive and 0 < min-dur <= max-dur")
     if args.command == "run":
@@ -147,7 +157,8 @@ def main(argv: list[str] | None = None) -> int:
                           content_type=args.content_type,
                           llm_window_seconds=args.llm_window_seconds or (300.0 if args.notebook else 900.0),
                           campaign_file=args.campaign, review_llm=args.review_llm, review_mode=args.review_mode,
-                          visual_review=bool(args.visual_review), visual_review_llm=args.visual_review_llm)
+                          visual_review=bool(args.visual_review), visual_review_llm=args.visual_review_llm,
+                          template_file=args.template, credit=args.credit)
         try:
             workdir = run(args.source, Path(args.out), settings, options, args.chat)
         except CodexResponseRequired as exc:
@@ -171,7 +182,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         workdir = rerender(Path(args.workdir), settings,
                            Options(captions=not args.no_captions, content_type=args.content_type,
-                                   batch=args.batch))
+                                   batch=args.batch, template_file=args.template, credit=args.credit,
+                                   render_limit=args.max_clips))
     complete_status(workdir / "codex-llm", ["clipper", *command_args])
     print(f"[done] clips in {workdir / 'clips'}", flush=True)
     return 0

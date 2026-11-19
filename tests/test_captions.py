@@ -1,4 +1,8 @@
-from clipper.captions import ass_time, build_ass, group_words
+import json
+
+import pytest
+
+from clipper.captions import ass_time, build_ass, group_words, load_template
 from clipper.transcribe import Word
 
 
@@ -30,3 +34,33 @@ def test_build_ass_relative_times_highlight_and_escape():
 def test_build_ass_skips_words_outside_clip():
     ass = build_ass(words(), clip_start=12.5, clip_end=14.0)
     assert sum(line.startswith("Dialogue") for line in ass.splitlines()) == 1
+
+
+def test_template_keeps_title_and_credit_when_spoken_captions_are_disabled(tmp_path):
+    path = tmp_path / "template.json"
+    path.write_text(json.dumps({"title_enabled": True, "credit_enabled": True,
+                                "background_mode": "framed"}), encoding="utf-8")
+    template = load_template(path)
+    ass = build_ass(words(), 10, 14, template=template, title="Meu {título}",
+                    credit="Fonte: canal", include_captions=False)
+    dialogue = [line for line in ass.splitlines() if line.startswith("Dialogue")]
+    assert len(dialogue) == 2
+    assert "TemplateTitle" in dialogue[0] and "Meu (título)" in dialogue[0]
+    assert "TemplateCredit" in dialogue[1] and "Fonte: canal" in dialogue[1]
+    assert not any(",Main," in line for line in dialogue)
+
+
+def test_template_rejects_unknown_fields_and_unsafe_frame_color(tmp_path):
+    path = tmp_path / "template.json"
+    path.write_text('{"typo": true}', encoding="utf-8")
+    with pytest.raises(ValueError, match="unknown template fields"):
+        load_template(path)
+    path.write_text('{"frame_color": "red;movie=bad"}', encoding="utf-8")
+    with pytest.raises(ValueError, match="frame_color"):
+        load_template(path)
+    path.write_text('{"caption": {"max_words": 0}}', encoding="utf-8")
+    with pytest.raises(ValueError, match="max_words"):
+        load_template(path)
+    path.write_text('{"caption": {"font": "Arial,Injected"}}', encoding="utf-8")
+    with pytest.raises(ValueError, match="font"):
+        load_template(path)

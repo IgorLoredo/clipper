@@ -6,7 +6,7 @@ from pathlib import Path
 
 from clipper import detect as detect_mod
 from clipper import attention, campaign, llm, reframe, signals
-from clipper.captions import build_ass
+from clipper.captions import build_ass, load_template
 from clipper.codex_exchange import CodexExchange
 from clipper.config import Settings
 from clipper.detect import Highlight
@@ -36,6 +36,9 @@ class Options:
     review_mode: str = "strict"
     visual_review: bool = False
     visual_review_llm: str = "codex"
+    template_file: Path | None = None
+    credit: str = ""
+    render_limit: int | None = None
 
 
 def existing_ranges(workdir: Path) -> tuple[tuple[float, float], ...]:
@@ -149,7 +152,10 @@ def rerender(workdir: Path, settings: Settings, options: Options) -> Path:
     transcript = Transcript.load(workdir / "transcript.json")
     data = json.loads((workdir / "highlights.json").read_text(encoding="utf-8"))
     content_type = reframe.resolve_content_type(src.title, options.content_type)
-    render_all(src, transcript, [Highlight(**h) for h in data], settings, options,
+    highlights = [Highlight(**h) for h in data]
+    if options.render_limit is not None:
+        highlights = sorted(highlights, key=lambda item: item.ranking_score, reverse=True)[:options.render_limit]
+    render_all(src, transcript, highlights, settings, options,
                options.batch or "manual", None, content_type)
     return workdir
 
@@ -166,21 +172,36 @@ def render_all(src: Source, transcript: Transcript, highlights: list[Highlight],
     clips_dir.mkdir(parents=True, exist_ok=False)
     print(f"[render] output {clips_dir}", flush=True)
     manifest = []
+    template = load_template(options.template_file)
     for rank, h in enumerate(sorted(highlights, key=lambda x: x.ranking_score, reverse=True), 1):
         stem = f"{rank:02d}_{h.score:03d}_{slugify(h.title, 40)}"
         print(f"[render] {stem} ({h.start:.1f}s-{h.end:.1f}s)", flush=True)
         # Keep the established podcast call shape intact; gameplay opts into the new full-screen plan.
-        if content_type == "gameplay":
-            framing = reframe.plan(src.video, h.start, h.end, settings.face_model, content_type="gameplay")
+        if content_type in {"gameplay", "anime", "mass"}:
+            framing = reframe.plan(src.video, h.start, h.end, settings.face_model, content_type=content_type)
         else:
             framing = reframe.plan(src.video, h.start, h.end, settings.face_model)
         subs = None
-        if options.captions:
+        overlay_text = ((template.title_enabled and bool(h.title.strip()))
+                        or (template.brand_enabled and bool(template.brand.strip()))
+                        or (template.credit_enabled and bool(options.credit.strip() or template.credit.strip())))
+        if options.captions or overlay_text:
             subs = clips_dir / f"{stem}.ass"
-            subs.write_text(build_ass(transcript.words, h.start, h.end), encoding="utf-8")
-        output = render_clip(src.video, h.start, h.end, framing, subs, clips_dir / f"{stem}.mp4")
+            subs.write_text(build_ass(transcript.words, h.start, h.end, template=template,
+                                      title=h.title, credit=options.credit,
+                                      include_captions=options.captions), encoding="utf-8")
+        output_path = clips_dir / f"{stem}.mp4"
+        if options.template_file:
+            output = render_clip(src.video, h.start, h.end, framing, subs, output_path,
+                                 template.width, template.height, template.background_mode,
+                                 template.frame_color)
+        else:
+            output = render_clip(src.video, h.start, h.end, framing, subs, output_path)
         manifest.append({**asdict(h), "file": output.name, "framing": framing.mode,
                          "content_type": content_type})
+        if options.template_file:
+            manifest[-1]["template"] = {"name": template.name, "file": str(options.template_file),
+                                         "credit": options.credit or template.credit}
         if attention_context is not None:
             manifest[-1]["engagement"] = attention_context.interval(h.start, h.end)
         (clips_dir / "clips.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")

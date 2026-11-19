@@ -43,3 +43,11 @@ def test_anime_and_mass_titles_use_wide_layouts():
     assert resolve_content_type("Santa Missa e homilia de domingo") == "mass"
     for mode in ("anime", "mass"):
         assert "force_original_aspect_ratio=decrease" in video_filter(Framing(mode, 1920, 1080), None)
+
+
+def test_framed_template_preserves_aspect_ratio_and_uses_custom_color():
+    expression = video_filter(Framing("gameplay", 1920, 1080), "captions.ass",
+                              1080, 1920, "framed", "0x112233@0.8")
+    assert "scale=1042:652:force_original_aspect_ratio=decrease" in expression
+    assert "color=0x112233@0.8" in expression
+    assert "ass=captions.ass" in expression
