@@ -4,8 +4,8 @@ import sys
 import math
 from pathlib import Path
 
-from clipper.codex_exchange import CodexResponseRequired
 from clipper.branding import load_branding
+from clipper.codex_exchange import CodexResponseRequired, complete_status, write_status
 from clipper.config import Settings, load_dotenv
 from clipper.llm import PROVIDERS, ProvidersExhausted
 from clipper.pipeline import Options, rerender, run
@@ -56,8 +56,13 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--exclude-existing", action="store_true", help="avoid moments already rendered as clips")
     run_p.add_argument("--select-only", action="store_true", help="save selected timestamps without rendering")
     run_p.add_argument("--gameplay-criteria", type=Path, help="JSON overrides for gameplay ranking weights and thresholds")
-    run_p.add_argument("--no-visual-review", action="store_true",
-                       help="skip frame review for Codex gameplay and select by transcript")
+    visual = run_p.add_mutually_exclusive_group()
+    visual.add_argument("--visual-review", dest="visual_review", action="store_true", default=None,
+                        help="review gameplay candidates using local frame grids")
+    visual.add_argument("--no-visual-review", dest="visual_review", action="store_false",
+                        help="select gameplay only from transcript and existing signals")
+    run_p.add_argument("--visual-review-llm", default="codex", metavar="codex[:MODEL]",
+                       help="independent visual reviewer (default: codex)")
     run_p.add_argument("--prefer-speaker", default=None, help="participant to prioritize using supplied speaker timestamps")
     run_p.add_argument("--speaker-turns", type=Path, default=None, help="JSON with start/end/speaker annotations; required with --prefer-speaker")
     run_p.add_argument("--speaker-mode", choices=("prefer", "only"), default="prefer", help="prefer this participant or allow only their speech")
@@ -80,14 +85,20 @@ def build_parser() -> argparse.ArgumentParser:
                        help="override LLM_PROVIDER; a comma list is a fallback chain, "
                             f"e.g. anthropic,openai:gpt-5-mini,ollama ({', '.join(PROVIDERS)})")
     _add_render_options(run_p)
+    run_p.add_argument("--template", type=Path, default=None,
+                       help="JSON visual template with title, captions, brand and source credit")
+    run_p.add_argument("--credit", default="", help="source credit shown by the visual template")
 
     render_p = sub.add_parser("render", help="re-render clips from an edited highlights.json")
     render_p.add_argument("workdir", help="folder created by `run` (out/<video>)")
     render_p.add_argument("--batch", default=None, help="name for this new render batch; preserves previous batches")
+    render_p.add_argument("--max-clips", type=int, default=None, help="render only the top N selected clips")
     render_p.add_argument("--content-type", choices=("auto", "podcast", "gameplay", "anime", "mass"), default="auto")
     _add_render_options(render_p)
     render_p.add_argument("--limit", type=int, help="render only the highest-ranked N clips")
     render_p.add_argument("--preview-only", action="store_true", help="preview the top clip without exporting MP4")
+    render_p.add_argument("--template", type=Path, default=None, help="JSON visual template")
+    render_p.add_argument("--credit", default="", help="source credit shown by the visual template")
     overlay_p = sub.add_parser("overlay", help="generate the transparent ViraCortes PNG")
     overlay_p.add_argument("output", type=Path)
     overlay_p.add_argument("--template-config", type=Path)
@@ -110,12 +121,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
+    command_args = list(argv) if argv is not None else sys.argv[1:]
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command == "gameplay":
+    gameplay_profile = args.command == "gameplay"
+    if gameplay_profile:
         args.command = "run"
         args.content_type = "gameplay"
-        args.llm = args.llm or "codex"
+        if not args.notebook:
+            args.llm = args.llm or "codex"
+        if args.visual_review is None:
+            args.visual_review = True
     if args.command == "diarize":
         from clipper.diarize import run as diarize
         try:
@@ -137,9 +153,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.content_type not in {"auto", "gameplay"}:
             parser.error("--gameplay-split requires gameplay")
         args.content_type = "gameplay"
+    if getattr(args, "template", None) and not args.template.is_file():
+        build_parser().error(f"template file not found: {args.template}")
+    if args.command == "render" and args.max_clips is not None and args.max_clips < 1:
+        build_parser().error("render max-clips must be positive")
+    if args.command != "overlay" and args.gameplay_split and args.template:
+        parser.error("--template cannot be combined with --gameplay-split")
     try:
         brand = None
-        if args.command == "overlay" or (args.viracortes and not args.gameplay_split):
+        if args.command == "overlay" or (args.viracortes and not args.gameplay_split and args.template is None):
             brand = load_branding(args.template_config, args.template_mode)
         if args.command == "overlay":
             from clipper.brand_graphics import write_overlay
@@ -186,6 +208,11 @@ def main(argv: list[str] | None = None) -> int:
         unknown = [provider for provider, _ in settings.llm_chain if provider not in PROVIDERS]
         if unknown:
             build_parser().error(f"unknown LLM provider {unknown[0]!r}; use one of: {', '.join(PROVIDERS)}")
+        visual_review = args.visual_review if args.visual_review is not None else settings.llm_provider == "codex"
+        if visual_review:
+            visual_settings = settings.with_llm(args.visual_review_llm)
+            if visual_settings.llm_provider != "codex" or visual_settings.llm_fallbacks:
+                build_parser().error("visual-review-llm currently accepts only codex[:model]")
         options = Options(max_clips=args.max_clips, min_dur=args.min_dur, max_dur=args.max_dur,
                           language=args.lang, captions=not args.no_captions,
                           batch=args.batch, exclude_existing=args.exclude_existing,
@@ -194,8 +221,10 @@ def main(argv: list[str] | None = None) -> int:
                           content_type=args.content_type,
                           llm_window_seconds=args.llm_window_seconds or (300.0 if args.notebook else 900.0),
                           campaign_file=args.campaign, review_llm=args.review_llm, review_mode=args.review_mode,
-                          visual_review=not args.no_visual_review, brand=brand, preview_at=args.preview_at,
-                          gameplay_split=args.gameplay_split, webcam_crop=args.webcam_crop)
+                          visual_review=visual_review, visual_review_llm=args.visual_review_llm,
+                          template_file=args.template, credit=args.credit, brand=brand,
+                          preview_at=args.preview_at, gameplay_split=args.gameplay_split,
+                          webcam_crop=args.webcam_crop)
         try:
             options.select_only = args.select_only
             if args.gameplay_criteria:
@@ -208,11 +237,14 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError(f"invalid gameplay criteria: {exc}") from exc
             workdir = run(args.source, Path(args.out), settings, options, args.chat)
             if options.select_only:
+                complete_status(workdir / "codex-llm", ["clipper", *command_args])
                 return 0
         except CodexResponseRequired as exc:
+            status = write_status(exc.requests, ["clipper", *command_args], exc.stage)
             print(f"\nCodex | {len(exc.requests)} pedido(s) aguardando resposta", flush=True)
             for request in exc.requests:
                 print(request, flush=True)
+            print(f"Status: {status}", flush=True)
             print("Responda com $clipper-cortes e repita o mesmo comando para continuar.", flush=True)
             return 3
         except FileNotFoundError as exc:
@@ -230,12 +262,14 @@ def main(argv: list[str] | None = None) -> int:
             workdir = rerender(Path(args.workdir), settings,
                                Options(captions=not args.no_captions, content_type=args.content_type,
                                        batch=args.batch, brand=brand, preview_only=args.preview_only,
-                                       preview_at=args.preview_at, render_limit=args.limit,
+                                       preview_at=args.preview_at, render_limit=args.limit if args.limit is not None else args.max_clips,
+                                       template_file=args.template, credit=args.credit,
                                        gameplay_split=args.gameplay_split, webcam_crop=args.webcam_crop))
         except ValueError as exc:
             print(f"[error] {exc}", file=sys.stderr, flush=True)
             return 2
         if args.preview_only:
             return 0
+    complete_status(workdir / "codex-llm", ["clipper", *command_args])
     print(f"[done] clips in {workdir / 'clips'}", flush=True)
     return 0

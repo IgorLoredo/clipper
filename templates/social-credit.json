@@ -1,0 +1,24 @@
+{
+  "name": "social-credit",
+  "width": 1080,
+  "height": 1920,
+  "background_mode": "framed",
+  "brand": "RecorteMode",
+  "brand_enabled": true,
+  "frame_color": "0x00E5FF@0.95",
+  "title_enabled": true,
+  "title_size": 54,
+  "title_color": "&HFFFFFF&",
+  "title_margin_v": 150,
+  "credit_enabled": true,
+  "credit_size": 28,
+  "credit_color": "&HCCCCCC&",
+  "credit_margin_v": 70,
+  "caption": {
+    "font": "Arial Black",
+    "size": 92,
+    "margin_v": 560,
+    "max_words": 3,
+    "highlight": "&H00E5FF&"
+  }
+}

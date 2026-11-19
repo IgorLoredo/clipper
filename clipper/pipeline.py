@@ -6,7 +6,7 @@ from pathlib import Path
 from clipper import detect as detect_mod
 from clipper import attention, campaign, llm, reframe, signals
 from clipper.branding import Branding
-from clipper.captions import CaptionStyle, build_ass
+from clipper.captions import CaptionStyle, build_ass, load_template
 from clipper.codex_exchange import CodexExchange
 from clipper.config import Settings
 from clipper.detect import Highlight
@@ -44,6 +44,9 @@ class Options:
     webcam_crop: tuple[int, int, int, int] | None = None
     select_only: bool = False
     gameplay_criteria: GameplayCriteria | None = None
+    visual_review_llm: str = "codex"
+    template_file: Path | None = None
+    credit: str = ""
 
 
 def existing_ranges(workdir: Path) -> tuple[tuple[float, float], ...]:
@@ -106,7 +109,7 @@ def run(source: str, out_root: Path, settings: Settings, options: Options, chat:
     if preference:
         run_id += f"-speaker-{preference.fingerprint}"
     cache = src.workdir / f"highlights.{run_id}.json"
-    visual_review = options.visual_review and content_type == "gameplay" and settings.llm_provider == "codex"
+    visual_review = options.visual_review and content_type == "gameplay"
     shortlist_size = min(12, options.max_clips + 4) if visual_review else options.max_clips
     if visual_review:
         cache = cache.with_suffix(".shortlist.json")
@@ -117,15 +120,18 @@ def run(source: str, out_root: Path, settings: Settings, options: Options, chat:
         campaign_context=brief.summary() if brief else "",
         **({"gameplay_criteria": options.gameplay_criteria} if content_type == "gameplay" else {}),
     )
-    if visual_review and highlights:
+    if visual_review:
         from clipper.gameplay import review
 
-        highlights = review(src.video, transcript, highlights, [], excluded,
+        visual_settings = settings.with_llm(options.visual_review_llm)
+        if visual_settings.llm_provider != "codex" or visual_settings.llm_fallbacks:
+            raise ValueError("visual review currently requires --visual-review-llm codex[:model]")
+        highlights = review(src.video, transcript, highlights, peaks, excluded,
                             options.min_dur, options.max_dur, options.max_clips,
-                            CodexExchange(settings.codex_directory, settings.model_for("codex")),
+                            CodexExchange(settings.codex_directory, visual_settings.model_for("codex")),
                             speaker_weight=preference.weight if preference else None,
                             campaign_context=brief.summary() if brief else "")
-        run_id += "-visual"
+        run_id += f"-visual-{slugify(visual_settings.model_for('codex'), 30)}"
         cache = src.workdir / f"highlights.{run_id}.json"
         cache.write_text(json.dumps([asdict(clip) for clip in highlights], ensure_ascii=False, indent=2),
                          encoding="utf-8")
@@ -166,7 +172,10 @@ def rerender(workdir: Path, settings: Settings, options: Options) -> Path:
     transcript = Transcript.load(workdir / "transcript.json")
     data = json.loads((workdir / "highlights.json").read_text(encoding="utf-8"))
     content_type = reframe.resolve_content_type(src.title, options.content_type)
-    render_all(src, transcript, [Highlight(**h) for h in data], settings, options,
+    highlights = [Highlight(**h) for h in data]
+    if options.render_limit is not None:
+        highlights = sorted(highlights, key=lambda item: item.ranking_score, reverse=True)[:options.render_limit]
+    render_all(src, transcript, highlights, settings, options,
                options.batch or "manual", None, content_type)
     return workdir
 
@@ -205,7 +214,7 @@ def render_all(src: Source, transcript: Transcript, highlights: list[Highlight],
     clips_dir = src.workdir / "clips" / next_variant(src.workdir, variant)
     clips_dir.mkdir(parents=True, exist_ok=False)
     print(f"[render] output {clips_dir}", flush=True)
-    brand = options.brand if not options.gameplay_split and options.brand and options.brand.enabled else None
+    brand = options.brand if not options.gameplay_split and not options.template_file and options.brand and options.brand.enabled else None
     if brand:
         from clipper.brand_graphics import write_overlay
 
@@ -213,6 +222,7 @@ def render_all(src: Source, transcript: Transcript, highlights: list[Highlight],
     ordered = sorted(highlights, key=lambda x: x.ranking_score, reverse=True)
     ordered = ordered[:1 if options.preview_only else options.render_limit]
     manifest = []
+    template = load_template(options.template_file)
     for rank, h in enumerate(ordered, 1):
         stem = f"{rank:02d}_{h.score:03d}_{slugify(h.title, 40)}"
         print(f"[render] {stem} ({h.start:.1f}s-{h.end:.1f}s)", flush=True)
@@ -221,15 +231,23 @@ def render_all(src: Source, transcript: Transcript, highlights: list[Highlight],
             framing = reframe.plan_gameplay_split(src.video, h.start, settings.face_model, options.webcam_crop)
         elif content_type == "gameplay" or (brand and brand.mode == "horizontal"):
             framing = reframe.plan(src.video, h.start, h.end, settings.face_model, content_type="gameplay")
+        elif content_type in {"anime", "mass"}:
+            framing = reframe.plan(src.video, h.start, h.end, settings.face_model, content_type=content_type)
         else:
             framing = reframe.plan(src.video, h.start, h.end, settings.face_model)
         aspect = framing.src_w / framing.src_h if framing.src_w > 0 and framing.src_h > 0 else 16 / 9
         if brand and brand.mode == "horizontal":
             overlay = write_overlay(brand, clips_dir / f"{stem}.overlay.png", aspect, h.title)
         subs = None
-        if options.captions:
+        overlay_text = ((template.title_enabled and bool(h.title.strip()))
+                        or (template.brand_enabled and bool(template.brand.strip()))
+                        or (template.credit_enabled and bool(options.credit.strip() or template.credit.strip())))
+        if options.captions or overlay_text:
             subs = clips_dir / f"{stem}.ass"
-            if options.gameplay_split:
+            if options.template_file:
+                captions = build_ass(transcript.words, h.start, h.end, template=template,
+                                     title=h.title, credit=options.credit, include_captions=options.captions)
+            elif options.gameplay_split:
                 style = CaptionStyle(size=64, outline_width=5, margin_v=OUT_H - SPLIT_WEBCAM_HEIGHT - 26)
                 captions = build_ass(transcript.words, h.start, h.end, style)
             elif brand:
@@ -244,6 +262,9 @@ def render_all(src: Source, transcript: Transcript, highlights: list[Highlight],
                 captions = build_ass(transcript.words, h.start, h.end)
             subs.write_text(captions, encoding="utf-8")
         branding = {"brand": brand, "overlay": overlay} if brand else {}
+        if options.template_file:
+            branding = dict(width=template.width, height=template.height,
+                            background_mode=template.background_mode, frame_color=template.frame_color)
         if options.preview_only or options.preview_at is not None:
             at = options.preview_at if options.preview_at is not None else min(1, (h.end - h.start) / 2)
             preview = render_preview(src.video, h.start, h.end, framing, subs,
@@ -251,11 +272,19 @@ def render_all(src: Source, transcript: Transcript, highlights: list[Highlight],
             print(f"[preview] {preview}", flush=True)
         if options.preview_only:
             break
-        output = render_clip(src.video, h.start, h.end, framing, subs, clips_dir / f"{stem}.mp4", **branding)
+        output_path = clips_dir / f"{stem}.mp4"
+        if options.template_file:
+            output = render_clip(src.video, h.start, h.end, framing, subs, output_path,
+                                 template.width, template.height, template.background_mode, template.frame_color)
+        else:
+            output = render_clip(src.video, h.start, h.end, framing, subs, output_path, **branding)
         publication = output.with_suffix(".txt")
         publication.write_text(publication_text(h, src.title, content_type, transcript.language), encoding="utf-8")
         manifest.append({**asdict(h), "file": output.name, "framing": framing.mode,
                          "content_type": content_type, "publication_file": publication.name})
+        if options.template_file:
+            manifest[-1]["template"] = {"name": template.name, "file": str(options.template_file),
+                                         "credit": options.credit or template.credit}
         if attention_context is not None:
             manifest[-1]["engagement"] = attention_context.interval(h.start, h.end)
         if brand:

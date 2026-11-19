@@ -367,7 +367,7 @@ def detect(transcript: Transcript, peaks: list[Peak], llm: JsonLLM, max_clips: i
                 f"run the same command again to resume. Errors: {exc}") from exc
         _save_progress(progress, params, done)
     if pending:
-        raise CodexResponseRequired(list(dict.fromkeys(pending)))
+        raise CodexResponseRequired(list(dict.fromkeys(pending)), "selection")
     if keys:
         print(f"[detect] chunks by LLM: {_usage_summary(done, keys)}", flush=True)
     previous = [Highlight(a, b, 0, "", "", "") for a, b in excluded]

@@ -46,8 +46,9 @@ def rounded_foreground(width: int, height: int, radius: int) -> str:
             "[sharp][mask]alphamerge[fg]")
 
 
-def video_filter(framing: Framing, subtitles: str | None, *, width: int = OUT_W,
-                 height: int = OUT_H, output: str = "v") -> str:
+def video_filter(framing: Framing, subtitles: str | None, width: int = OUT_W,
+                 height: int = OUT_H, background_mode: str = "blur",
+                 frame_color: str = "0x00E5FF@0.95", *, output: str = "v") -> str:
     subs = f",ass={subtitles}" if subtitles else ""
     if framing.mode == "gameplay-split":
         if framing.webcam is None:
@@ -70,6 +71,22 @@ def video_filter(framing: Framing, subtitles: str | None, *, width: int = OUT_W,
         return (f"[0:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1{subs}[{output}]")
     if framing.mode in {"gameplay", "anime", "mass"}:
+        if background_mode == "framed":
+            frame_x = max(8, int(width * 0.018))
+            frame_y = int(height * 0.32)
+            frame_w = width - frame_x * 2
+            frame_h = int(height * 0.34)
+            return (f"[0:v]split[bg][src];"
+                    f"[bg]scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},boxblur=24:4[blur];"
+                    f"[src]scale={frame_w}:{frame_h}:force_original_aspect_ratio=decrease[fg];"
+                    f"[blur][fg]overlay={frame_x}+({frame_w}-overlay_w)/2:{frame_y}+({frame_h}-overlay_h)/2,"
+                    f"drawbox=x={frame_x-6}:y={frame_y-6}:w={frame_w+12}:h={frame_h+12}:color={frame_color}:t=4,"
+                    f"drawbox=x=48:y={int(height*0.115)}:w={width-96}:h={int(height*0.105)}:color=0x031626@0.88:t=fill,"
+                    f"drawbox=x=48:y={int(height*0.695)}:w={width-96}:h={int(height*0.17)}:color=0x031626@0.88:t=fill,"
+                    f"setsar=1{subs}[{output}]")
+        if background_mode == "cover":
+            return (f"[0:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
+                    f"crop={width}:{height},setsar=1{subs}[{output}]")
         # Full source frame on a blurred vertical canvas: all of a 16:9 game capture stays visible.
         return (f"[0:v]split[a][b];"
                 f"[a]{blurred_source(width, height)}[bg];"
@@ -125,14 +142,15 @@ def branded_filter(framing: Framing, subtitles: str | None, brand: Branding) -> 
 
 def _render_args(video: Path, start: float, end: float, framing: Framing,
                  subtitles: Path | None, directory: Path, brand: Branding | None,
-                 overlay: Path | None) -> list[str]:
+                 overlay: Path | None, width: int, height: int,
+                 background_mode: str, frame_color: str) -> list[str]:
     sub_name = None
     if subtitles is not None:
         if subtitles.parent.resolve() != directory.resolve():
             raise ValueError("subtitles file must live next to the output clip")
         sub_name = subtitles.name
     args = ["-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(video.resolve())]
-    graph = video_filter(framing, sub_name)
+    graph = video_filter(framing, sub_name, width, height, background_mode, frame_color)
     if brand is not None and brand.enabled:
         if overlay is None:
             raise ValueError("ViraCortes artwork is required")
@@ -142,11 +160,14 @@ def _render_args(video: Path, start: float, end: float, framing: Framing,
 
 
 def render_clip(video: Path, start: float, end: float, framing: Framing,
-                subtitles: Path | None, output: Path, *, brand: Branding | None = None,
+                subtitles: Path | None, output: Path, width: int = OUT_W, height: int = OUT_H,
+                background_mode: str = "blur", frame_color: str = "0x00E5FF@0.95", *,
+                brand: Branding | None = None,
                 overlay: Path | None = None) -> Path:
     output.parent.mkdir(parents=True, exist_ok=True)
     args = [
-        *_render_args(video, start, end, framing, subtitles, output.parent, brand, overlay),
+        *_render_args(video, start, end, framing, subtitles, output.parent, brand, overlay,
+                     width, height, background_mode, frame_color),
         "-map", "0:a?",
     ]
     tail = ["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", output.name]
@@ -164,12 +185,15 @@ def render_clip(video: Path, start: float, end: float, framing: Framing,
 
 def render_preview(video: Path, start: float, end: float, framing: Framing,
                    subtitles: Path | None, output: Path, *, brand: Branding | None = None,
-                   overlay: Path | None = None, at: float = 0) -> Path:
+                   overlay: Path | None = None, at: float = 0,
+                   width: int = OUT_W, height: int = OUT_H, background_mode: str = "blur",
+                   frame_color: str = "0x00E5FF@0.95") -> Path:
     """Render one frame at a clip-relative time, keeping tracking and ASS timestamps."""
     if not 0 <= at < end - start:
         raise ValueError("preview time must be within the clip")
     output.parent.mkdir(parents=True, exist_ok=True)
-    args = _render_args(video, start, end, framing, subtitles, output.parent, brand, overlay)
+    args = _render_args(video, start, end, framing, subtitles, output.parent, brand, overlay,
+                     width, height, background_mode, frame_color)
     ffmpeg.run([*args, "-ss", f"{at:.3f}", "-frames:v", "1", "-update", "1", output.name],
                cwd=output.parent)
     return output

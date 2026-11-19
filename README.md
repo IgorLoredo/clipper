@@ -58,6 +58,26 @@ clipper run "URL_DO_ANIME" --content-type anime --no-captions --lang pt
 clipper run "URL_DA_MISSA" --content-type mass --lang pt
 ```
 
+### Template visual reutilizável
+
+Use um JSON como [templates/social-credit.json](templates/social-credit.json) para aplicar a mesma identidade visual em diferentes lotes. O template controla resolução, enquadramento, título, marca, legenda animada, cor da moldura e crédito da fonte:
+
+```bash
+clipper run "URL_DO_VIDEO" --template templates/social-credit.json \
+  --credit "Fonte: Canal Original" --lang pt
+```
+
+A opção `--template` aplica a identidade do JSON ao lote. O layout `--gameplay-split` usa configuração própria.
+
+O título vem do corte escolhido pela LLM. `--no-captions` remove somente a legenda falada: título, marca e crédito continuam visíveis. Para refazer apenas os três melhores cortes sem chamar a LLM:
+
+```bash
+clipper render out/<video> --template templates/social-credit.json \
+  --credit "Fonte: Canal Original" --max-clips 3 --batch identidade-v2
+```
+
+Os modos de fundo aceitos são `blur` (tela completa sobre fundo desfocado), `cover` (preenche e corta as bordas) e `framed` (tela completa dentro de uma moldura). O manifesto `clips.json` registra o template e o crédito utilizados.
+
 ### Mais cortes de 1 a 3 minutos, preservando os anteriores
 
 ```bash
@@ -237,15 +257,24 @@ O desfoque, a composição e as legendas ASS continuam nos filtros de CPU.
 Para vídeos de gameplay, há um atalho:
 
 ```bash
-python -m clipper gameplay "video.mp4" --lang pt --max-clips 6
+python -m clipper gameplay "video.mp4" --llm ollama:qwen3:4b --lang pt --max-clips 6
+python -m clipper gameplay "video.mp4" --llm gemini:gemini-3.6-flash --visual-review-llm codex
 ```
 
-O Clipper primeiro seleciona pela transcrição. Depois envia ao Codex uma grade
-de quatro quadros por trecho, com até 12 candidatos da transcrição e quatro
-trechos adicionais sugeridos por picos de áudio. A revisão procura um gancho
-visual, ação compreensível e um desfecho, inclusive em trechos com pouca fala.
+O provedor escolhido em `--llm` faz a seleção inicial. Depois, o revisor visual
+independente envia ao Codex uma grade de seis quadros por trecho, incluindo o
+pico local mais forte. A shortlist tem até 12 candidatos da transcrição e pode
+receber trechos adicionais sugeridos por picos de áudio, movimento ou mudança
+de cena. A revisão procura um gancho visual, ação compreensível e um desfecho,
+inclusive em trechos silenciosos.
 Os quadros são extraídos localmente. Abrir as grades no Codex acrescenta
-contexto visual à conversa. Use `--no-visual-review` para pular essa etapa.
+contexto visual à conversa. Use `--no-visual-review` para pular essa etapa. A
+revisão visual não obriga a seleção a usar Codex: por exemplo, Ollama pode criar
+a shortlist localmente e Codex pode revisar somente os finalistas.
+
+Quando o processo aguarda o agente, `codex-status.json` registra a etapa atual,
+o comando exato, os pedidos pendentes e a próxima ação. Ao terminar, o estado
+muda para `complete`. Isso evita depender apenas do código de saída 3 para retomar.
 
 No Windows, se o Whisper detectar uma GPU mas falhar ao carregar
 `cublas64_12.dll`, rode em CPU. Por exemplo, no PowerShell:

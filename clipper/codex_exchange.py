@@ -2,14 +2,51 @@
 
 import hashlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 
 class CodexResponseRequired(RuntimeError):
-    def __init__(self, requests: list[Path]):
+    def __init__(self, requests: list[Path], stage: str = "selection"):
         self.requests = requests
+        self.stage = stage
         super().__init__("Codex responses required for:\n" + "\n".join(map(str, requests)))
+
+
+def _stage(schema: dict) -> str:
+    properties = schema.get("properties", {})
+    if "clips" in properties:
+        return "visual_review"
+    if "reviews" in properties:
+        return "campaign_review"
+    return "selection"
+
+
+def write_status(requests: list[Path], command: list[str], stage: str) -> Path:
+    directory = requests[0].parent
+    payload = {
+        "format": "clipper-codex-status-v1",
+        "state": "awaiting_response",
+        "stage": stage,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "command": command,
+        "pending_requests": [str(path.resolve()) for path in requests],
+        "next_action": "Write each matching .response.json and repeat the same command.",
+    }
+    path = directory / "codex-status.json"
+    _write_request(path, json.dumps(payload, ensure_ascii=False, indent=2))
+    return path
+
+
+def complete_status(directory: Path, command: list[str]) -> None:
+    path = directory / "codex-status.json"
+    if not directory.is_dir() and not path.is_file():
+        return
+    payload = {"format": "clipper-codex-status-v1", "state": "complete",
+               "updated_at": datetime.now(timezone.utc).isoformat(),
+               "command": command, "pending_requests": [], "next_action": "Review clips.json and the MP4 files."}
+    _write_request(path, json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 def _write_request(path: Path, contents: str) -> None:
@@ -40,7 +77,7 @@ class CodexExchange:
         if not request_path.is_file():
             _write_request(request_path, contents)
         if not response_path.is_file():
-            raise CodexResponseRequired([request_path])
+            raise CodexResponseRequired([request_path], _stage(schema))
 
         from jsonschema import Draft202012Validator
 
@@ -61,4 +98,4 @@ class CodexExchange:
             else:
                 print(f"[codex] invalid response in {response_path} at {error.json_path}: {error.message}",
                       flush=True)
-        raise CodexResponseRequired([request_path])
+        raise CodexResponseRequired([request_path], _stage(schema))

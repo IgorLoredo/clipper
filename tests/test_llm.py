@@ -64,6 +64,28 @@ def test_cli_parses_campaign_review_options():
     assert args.review_llm == "gemini" and args.review_mode == "warn"
 
 
+def test_gameplay_profile_keeps_selection_and_visual_models_independent(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run(source, out, settings, options, chat):
+        captured.update(settings=settings, options=options)
+        return tmp_path
+
+    monkeypatch.setattr("clipper.cli.run", fake_run)
+    assert main(["gameplay", "video.mp4", "--llm", "gemini:test-model",
+                 "--visual-review-llm", "codex:reviewer"]) == 0
+    assert captured["settings"].llm_provider == "gemini"
+    assert captured["options"].content_type == "gameplay"
+    assert captured["options"].visual_review is True
+    assert captured["options"].visual_review_llm == "codex:reviewer"
+
+
+def test_visual_review_rejects_unsupported_provider_before_running(monkeypatch):
+    monkeypatch.setattr("clipper.cli.run", lambda *args: pytest.fail("run must not start"))
+    with pytest.raises(SystemExit):
+        main(["gameplay", "video.mp4", "--llm", "gemini:test", "--visual-review-llm", "gemini:test"])
+
+
 def test_openai_compatible_sends_strict_schema_and_parses(monkeypatch):
     captured = {}
 
