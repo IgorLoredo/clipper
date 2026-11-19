@@ -4,14 +4,37 @@ import math
 from pathlib import Path
 
 from clipper.codex_exchange import CodexResponseRequired
+from clipper.branding import load_branding
 from clipper.config import Settings, load_dotenv
 from clipper.llm import PROVIDERS, ProvidersExhausted
 from clipper.pipeline import Options, rerender, run
 from clipper.attention import analyze
 
 
+def _webcam_crop(value: str) -> tuple[int, int, int, int]:
+    try:
+        x, y, w, h = map(int, value.split(","))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected X,Y,W,H in source pixels") from exc
+    if min(x, y) < 0 or min(w, h) < 2:
+        raise argparse.ArgumentTypeError("X and Y must be nonnegative, W and H must be at least 2")
+    return x, y, w, h
+
+
 def _add_render_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-captions", action="store_true", help="do not burn captions")
+    identity = parser.add_mutually_exclusive_group()
+    identity.add_argument("--viracortes", dest="viracortes", action="store_true", default=True,
+                          help="apply the ViraCortes identity (default)")
+    identity.add_argument("--no-viracortes", dest="viracortes", action="store_false",
+                          help="export without the ViraCortes identity")
+    parser.add_argument("--template-config", type=Path, help="custom ViraCortes JSON")
+    parser.add_argument("--template-mode", choices=("existing", "horizontal", "fill"))
+    parser.add_argument("--gameplay-split", action="store_true", help="stack the webcam above gameplay without a frame")
+    parser.add_argument("--webcam-crop", type=_webcam_crop, metavar="X,Y,W,H",
+                        help="override opening-frame webcam detection with a crop in source pixels")
+    parser.add_argument("--preview-at", type=float, metavar="SECONDS",
+                        help="also write a PNG at this time within each clip")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -59,6 +82,12 @@ def build_parser() -> argparse.ArgumentParser:
     render_p.add_argument("--batch", default=None, help="name for this new render batch; preserves previous batches")
     render_p.add_argument("--content-type", choices=("auto", "podcast", "gameplay", "anime", "mass"), default="auto")
     _add_render_options(render_p)
+    render_p.add_argument("--limit", type=int, help="render only the highest-ranked N clips")
+    render_p.add_argument("--preview-only", action="store_true", help="preview the top clip without exporting MP4")
+    overlay_p = sub.add_parser("overlay", help="generate the transparent ViraCortes PNG")
+    overlay_p.add_argument("output", type=Path)
+    overlay_p.add_argument("--template-config", type=Path)
+    overlay_p.add_argument("--template-mode", choices=("existing", "horizontal", "fill"))
     metrics_p = sub.add_parser("metrics", help="report attention by segment without an LLM or rendering")
     metrics_p.add_argument("workdir", help="existing video output folder")
     metrics_p.add_argument("--source", default=None, help="refresh public replay data from this video URL")
@@ -77,7 +106,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     if args.command == "gameplay":
         args.command = "run"
         args.content_type = "gameplay"
@@ -95,6 +125,29 @@ def main(argv: list[str] | None = None) -> int:
         report = analyze(Path(args.workdir), args.source)
         print(f"[done] metrics in {report} and {report.with_suffix('.md')}", flush=True)
         return 0
+    if args.command != "overlay" and args.webcam_crop is not None and not args.gameplay_split:
+        parser.error("--webcam-crop requires --gameplay-split")
+    if args.command != "overlay" and args.gameplay_split:
+        if args.content_type not in {"auto", "gameplay"}:
+            parser.error("--gameplay-split requires gameplay")
+        args.content_type = "gameplay"
+    try:
+        brand = None
+        if args.command == "overlay" or (args.viracortes and not args.gameplay_split):
+            brand = load_branding(args.template_config, args.template_mode)
+        if args.command == "overlay":
+            from clipper.brand_graphics import write_overlay
+
+            if args.output.suffix.lower() != ".png":
+                parser.error("overlay output must have a .png extension")
+            print(write_overlay(brand, args.output), flush=True)
+            return 0
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
+    if args.preview_at is not None and (not math.isfinite(args.preview_at) or args.preview_at < 0):
+        parser.error("--preview-at must be finite and nonnegative")
+    if args.command == "render" and args.limit is not None and args.limit < 1:
+        parser.error("--limit must be positive")
     if args.command == "run" and (args.max_clips < 1 or args.min_dur <= 0 or args.max_dur < args.min_dur):
         build_parser().error("max-clips must be positive and 0 < min-dur <= max-dur")
     if args.command == "run":
@@ -135,7 +188,8 @@ def main(argv: list[str] | None = None) -> int:
                           content_type=args.content_type,
                           llm_window_seconds=args.llm_window_seconds or (300.0 if args.notebook else 900.0),
                           campaign_file=args.campaign, review_llm=args.review_llm, review_mode=args.review_mode,
-                          visual_review=not args.no_visual_review)
+                          visual_review=not args.no_visual_review, brand=brand, preview_at=args.preview_at,
+                          gameplay_split=args.gameplay_split, webcam_crop=args.webcam_crop)
         try:
             workdir = run(args.source, Path(args.out), settings, options, args.chat)
         except CodexResponseRequired as exc:
@@ -155,8 +209,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[error] {exc}", file=sys.stderr, flush=True)
             return 2
     else:
-        workdir = rerender(Path(args.workdir), settings,
-                           Options(captions=not args.no_captions, content_type=args.content_type,
-                                   batch=args.batch))
+        try:
+            workdir = rerender(Path(args.workdir), settings,
+                               Options(captions=not args.no_captions, content_type=args.content_type,
+                                       batch=args.batch, brand=brand, preview_only=args.preview_only,
+                                       preview_at=args.preview_at, render_limit=args.limit,
+                                       gameplay_split=args.gameplay_split, webcam_crop=args.webcam_crop))
+        except ValueError as exc:
+            print(f"[error] {exc}", file=sys.stderr, flush=True)
+            return 2
+        if args.preview_only:
+            return 0
     print(f"[done] clips in {workdir / 'clips'}", flush=True)
     return 0

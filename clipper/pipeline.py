@@ -6,12 +6,13 @@ from pathlib import Path
 
 from clipper import detect as detect_mod
 from clipper import attention, campaign, llm, reframe, signals
-from clipper.captions import build_ass
+from clipper.branding import Branding
+from clipper.captions import CaptionStyle, build_ass
 from clipper.codex_exchange import CodexExchange
 from clipper.config import Settings
 from clipper.detect import Highlight
 from clipper.ingest import Source, fetch, slugify
-from clipper.render import render_clip
+from clipper.render import OUT_H, SPLIT_WEBCAM_HEIGHT, render_clip, render_preview
 from clipper.transcribe import Transcript, transcribe
 from clipper.speakers import load_preference
 
@@ -35,6 +36,12 @@ class Options:
     review_llm: str | None = None
     review_mode: str = "strict"
     visual_review: bool = True
+    brand: Branding | None = None
+    preview_only: bool = False
+    preview_at: float | None = None
+    render_limit: int | None = None
+    gameplay_split: bool = False
+    webcam_crop: tuple[int, int, int, int] | None = None
 
 
 def existing_ranges(workdir: Path) -> tuple[tuple[float, float], ...]:
@@ -150,10 +157,33 @@ def rerender(workdir: Path, settings: Settings, options: Options) -> Path:
     return workdir
 
 
+def publication_text(highlight: Highlight, source_title: str, content_type: str, language: str) -> str:
+    review = highlight.campaign_review or {}
+    approved = review if review.get("approved") else {}
+    title = approved.get("suggested_title") or highlight.title.strip() or source_title
+    description = approved.get("caption")
+    if not description:
+        hook = highlight.hook.strip()
+        credit = f"Trecho de “{source_title}”." if language.lower().startswith("pt") else f"Clip from “{source_title}”."
+        description = f"{hook}\n\n{credit}" if hook and hook.casefold() != title.casefold() else credit
+
+    categories = {"gameplay": ("Gameplay", "Games"), "anime": ("Anime",),
+                  "podcast": ("Podcast",), "mass": ("Missa",)}
+    suggestions = approved.get("hashtags") or ("ViraCortes", "Shorts", *categories.get(content_type, ()))
+    hashtags = {}
+    for suggestion in suggestions:
+        tag = "".join(suggestion.lstrip("#").split())
+        if tag:
+            hashtags.setdefault(tag.casefold(), f"#{tag}")
+    return f"Título sugerido\n{title}\n\nDescrição\n{description}\n\nHashtags\n{' '.join(hashtags.values())}\n"
+
+
 def render_all(src: Source, transcript: Transcript, highlights: list[Highlight],
                settings: Settings, options: Options, variant: str,
                attention_context: attention.Attention | None = None,
                content_type: str = "podcast") -> None:
+    if options.gameplay_split and content_type != "gameplay":
+        raise ValueError("split layout requires gameplay; use --content-type gameplay")
     source_meta = src.workdir / "source.json"
     if not source_meta.exists():
         source_meta.write_text(
@@ -161,24 +191,63 @@ def render_all(src: Source, transcript: Transcript, highlights: list[Highlight],
     clips_dir = src.workdir / "clips" / next_variant(src.workdir, variant)
     clips_dir.mkdir(parents=True, exist_ok=False)
     print(f"[render] output {clips_dir}", flush=True)
+    brand = options.brand if not options.gameplay_split and options.brand and options.brand.enabled else None
+    if brand:
+        from clipper.brand_graphics import write_overlay
+
+    overlay = write_overlay(brand, clips_dir / "viracortes.png") if brand and highlights and brand.mode != "horizontal" else None
+    ordered = sorted(highlights, key=lambda x: x.ranking_score, reverse=True)
+    ordered = ordered[:1 if options.preview_only else options.render_limit]
     manifest = []
-    for rank, h in enumerate(sorted(highlights, key=lambda x: x.ranking_score, reverse=True), 1):
+    for rank, h in enumerate(ordered, 1):
         stem = f"{rank:02d}_{h.score:03d}_{slugify(h.title, 40)}"
         print(f"[render] {stem} ({h.start:.1f}s-{h.end:.1f}s)", flush=True)
         # Keep the established podcast call shape intact; gameplay opts into the new full-screen plan.
-        if content_type == "gameplay":
+        if options.gameplay_split:
+            framing = reframe.plan_gameplay_split(src.video, h.start, settings.face_model, options.webcam_crop)
+        elif content_type == "gameplay" or (brand and brand.mode == "horizontal"):
             framing = reframe.plan(src.video, h.start, h.end, settings.face_model, content_type="gameplay")
         else:
             framing = reframe.plan(src.video, h.start, h.end, settings.face_model)
+        aspect = framing.src_w / framing.src_h if framing.src_w > 0 and framing.src_h > 0 else 16 / 9
+        if brand and brand.mode == "horizontal":
+            overlay = write_overlay(brand, clips_dir / f"{stem}.overlay.png", aspect, h.title)
         subs = None
         if options.captions:
             subs = clips_dir / f"{stem}.ass"
-            subs.write_text(build_ass(transcript.words, h.start, h.end), encoding="utf-8")
-        output = render_clip(src.video, h.start, h.end, framing, subs, clips_dir / f"{stem}.mp4")
+            if options.gameplay_split:
+                style = CaptionStyle(size=64, outline_width=5, margin_v=OUT_H - SPLIT_WEBCAM_HEIGHT - 26)
+                captions = build_ass(transcript.words, h.start, h.end, style)
+            elif brand:
+                w, height = brand.size
+                bottom, side = brand.caption_margins(aspect)
+                style = CaptionStyle()
+                style = replace(style, size=max(1, round(style.size * w / 1080)),
+                                outline_width=max(1, round(style.outline_width * w / 1080)),
+                                shadow=round(style.shadow * w / 1080), margin_v=round(height * bottom))
+                captions = build_ass(transcript.words, h.start, h.end, style, w, height, round(w * side))
+            else:
+                captions = build_ass(transcript.words, h.start, h.end)
+            subs.write_text(captions, encoding="utf-8")
+        branding = {"brand": brand, "overlay": overlay} if brand else {}
+        if options.preview_only or options.preview_at is not None:
+            at = options.preview_at if options.preview_at is not None else min(1, (h.end - h.start) / 2)
+            preview = render_preview(src.video, h.start, h.end, framing, subs,
+                                     clips_dir / f"{stem}.preview.png", at=at, **branding)
+            print(f"[preview] {preview}", flush=True)
+        if options.preview_only:
+            break
+        output = render_clip(src.video, h.start, h.end, framing, subs, clips_dir / f"{stem}.mp4", **branding)
+        publication = output.with_suffix(".txt")
+        publication.write_text(publication_text(h, src.title, content_type, transcript.language), encoding="utf-8")
         manifest.append({**asdict(h), "file": output.name, "framing": framing.mode,
-                         "content_type": content_type})
+                         "content_type": content_type, "publication_file": publication.name})
         if attention_context is not None:
             manifest[-1]["engagement"] = attention_context.interval(h.start, h.end)
+        if brand:
+            manifest[-1]["branding"] = {"template": "viracortes", "mode": brand.mode, "size": brand.size}
+        if framing.mode == "gameplay-split":
+            manifest[-1]["webcam_crop"] = framing.webcam
         (clips_dir / "clips.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     (clips_dir / "clips.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     if content_type == "gameplay":

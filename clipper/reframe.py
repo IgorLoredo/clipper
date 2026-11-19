@@ -1,5 +1,6 @@
 import urllib.request
 import re
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -17,6 +18,46 @@ class Framing:
     src_h: int
     crop_w: int = 0
     points: list[tuple[float, int]] = field(default_factory=list)
+    webcam: tuple[int, int, int, int] | None = None
+
+
+def plan_gameplay_split(video: Path, start: float, face_model: str,
+                        webcam: tuple[int, int, int, int] | None = None) -> Framing:
+    from clipper.ffmpeg import ffmpeg_exe
+
+    result = subprocess.run(
+        [ffmpeg_exe(), "-v", "error", "-ss", f"{start:.3f}", "-i", str(video),
+         "-frames:v", "1", "-f", "image2pipe", "-c:v", "ppm", "-"],
+        capture_output=True,
+    )
+    if result.returncode or not result.stdout:
+        raise ValueError(f"could not extract the opening frame from {video}")
+    _, dimensions, _, pixels = result.stdout.split(b"\n", 3)
+    src_w, src_h = map(int, dimensions.split())
+    if webcam is None:
+        try:
+            detect = _detector(face_model)
+        except ImportError as exc:
+            raise ValueError("webcam detection requires OpenCV; use --webcam-crop X,Y,W,H") from exc
+        rgb = np.frombuffer(pixels, dtype=np.uint8).reshape(src_h, src_w, 3)
+        faces = [face for face in detect(rgb[:, :, ::-1].copy())
+                 if face[0] + face[2] / 2 < 0.35 * src_w
+                 or face[0] + face[2] / 2 > 0.65 * src_w
+                 or face[1] + face[3] / 2 < 0.28 * src_h
+                 or face[1] + face[3] / 2 > 0.72 * src_h]
+        if not faces:
+            raise ValueError("no webcam face found in the opening frame; use --webcam-crop X,Y,W,H")
+        x, y, w, h = max(faces, key=lambda face: face[2] * face[3])
+        crop_w = min(even(src_w), max(2, even(w * 2.5)))
+        crop_h = min(even(src_h), max(2, even(h * 1.9)))
+        left = even(np.clip(x + w / 2 - crop_w / 2, 0, src_w - crop_w))
+        top = even(np.clip(y + h * 0.68 - crop_h / 2, 0, src_h - crop_h))
+        webcam = left, top, crop_w, crop_h
+    x, y, w, h = webcam
+    if min(x, y) < 0 or min(w, h) < 2 or x + w > src_w or y + h > src_h:
+        raise ValueError(f"webcam crop must fit inside the {src_w}x{src_h} source frame")
+    print(f"[layout] webcam crop {x},{y},{w},{h}", flush=True)
+    return Framing("gameplay-split", src_w, src_h, webcam=webcam)
 
 
 GAMEPLAY_PATTERN = re.compile(

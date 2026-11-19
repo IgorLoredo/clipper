@@ -164,6 +164,76 @@ o Clipper valida as respostas e aproveita as janelas já concluídas. Com
 `--campaign`, o mesmo fluxo também atende à revisão antes da renderização.
 O modo Codex dispensa chave de API de LLM no Clipper.
 
+### Identidade visual ViraCortes
+
+Os comandos `run`, `gameplay` e `render` aplicam por padrão a identidade
+ViraCortes no modo `horizontal`. Use `--no-viracortes` para exportar sem a
+moldura. O FFmpeg compõe o PNG RGBA sobre o vídeo e queima o ASS na
+mesma passagem. O Clipper gera a arte uma vez por lote. A área central
+do PNG é transparente.
+
+```bash
+python -m clipper render "out/MEU-VIDEO" --viracortes --template-mode horizontal --batch viracortes
+python -m clipper render "out/MEU-VIDEO" --viracortes --preview-only --preview-at 1
+python -m clipper overlay out/viracortes.png --template-mode horizontal
+```
+
+A [moldura de referência](assets/references/viracortes-moldura.png) registra
+o estilo aprovado, e o [exemplo aplicado](assets/references/viracortes-aplicado.png)
+mostra o fundo desfocado e as legendas. O [avatar](assets/references/viracortes-perfil.png)
+usa a mesma identidade. O renderizador gera a moldura de cada corte com base no JSON.
+
+`--preview-only` gera um PNG do corte mais bem classificado, com as legendas
+ativas naquele instante. Sem essa opção, `--preview-at` grava também uma
+prévia de cada corte exportado. O tempo é relativo ao início do corte.
+`render --limit 1` exporta apenas o primeiro corte.
+
+Cada MP4 é acompanhado de um TXT em UTF-8 com o mesmo nome-base. Ele contém
+um título sugerido, uma descrição e hashtags. Para campanhas aprovadas,
+o Clipper reutiliza o texto e as hashtags sugeridos pela revisão.
+
+- `existing` mantém o reenquadramento atual, inclusive o rastreamento.
+- `horizontal` preserva a proporção e usa a largura disponível da moldura.
+  O mesmo vídeo desfocado preenche as áreas livres. O quadro nítido recebe
+  a borda neon e o título do corte aparece na caixa roxa acima dele.
+  Quando há espaço, a legenda fica abaixo do vídeo.
+- `fill` preenche o canvas preservando a proporção, com rastreamento
+  quando o plano existente o fornece e crop nos demais casos.
+
+Use [assets/templates/viracortes.json](assets/templates/viracortes.json)
+como base para `--template-config caminho.json`. Arquivos parciais herdam
+os valores padrão. `enabled: false` desativa a identidade na exportação.
+`--template-mode` substitui o modo do JSON. A saída padrão é 1080 × 1920,
+com outras resoluções pares em 9:16 disponíveis no JSON.
+O template usa apenas OpenCV e NumPy, já instalados com o projeto.
+
+| Ajuste | Campos |
+| --- | --- |
+| Canvas e tema | `width`, `height`, `scale`, `theme` (`neon` ou `minimal`) |
+| Logo e ícone de play | `logo_text`, `logo_label`, `logo_font` (família Hershey), `logo_color`, `logo_size`, `logo_x`, `logo_y`, `logo_icon` |
+| Moldura | `border_margin`, `border_top`, `border_bottom`, `border_width`, `border_radius`, `border_color`, `border_opacity` |
+| Neon | `neon_color`, `neon_intensity`, `neon_blur`, `neon_opacity` |
+| Rodapé | `footer_visible`, `footer_text`, `footer_label`, `footer_y`, `footer_width`, `footer_size` |
+| Vídeo | `mode`, `zoom`, `offset_x`, `offset_y`, `video_margin` |
+| Título horizontal | `title_visible`, `title_text` (vazio usa o título do corte), `title_color`, `title_size`, `title_width` |
+| Espaço abaixo do título | `title_gap`, como fração da altura do canvas |
+| Fundo | `background_enabled`, `background_color`, `background_opacity` |
+| Legendas | `caption_bottom`, `caption_margin` |
+
+As cores usam `#RRGGBB`. X e Y são frações da largura e altura, respectivamente.
+Medidas gráficas como espessura, raio e tamanho de fonte são frações da largura.
+As opacidades vão de 0 a 1. Os deslocamentos vão de −1 a 1 e definem a
+posição na área livre ou a âncora do crop. O modo `horizontal` limita o zoom
+a 1 para preservar o quadro completo. `caption_bottom: null` usa a posição
+automática. O FFmpeg exporta MP4 opaco. A transparência editável fica no PNG.
+Para incluir a caixa em um PNG independente, use `--template-mode horizontal`
+e defina `title_text` no JSON.
+
+Na exportação MP4, o Clipper testa os encoders H.264 NVIDIA NVENC, Intel
+Quick Sync e AMD AMF, nessa ordem. Se a GPU estiver indisponível ou o encoder
+falhar na exportação, usa libx264. O log informa o encoder escolhido.
+O desfoque, a composição e as legendas ASS continuam nos filtros de CPU.
+
 Para vídeos de gameplay, há um atalho:
 
 ```bash
@@ -302,6 +372,22 @@ Depois da primeira coleta, `clipper metrics out/<titulo-do-video>` reutiliza os 
 | `clips/<lote>/clips.json` | novos cortes incluem `engagement`: replay médio/máximo, cobertura, mensagens no chat e picos de áudio |
 
 Novos dados de replay usam outro cache de seleção. Quando o mapa público não está disponível, a seleção continua com áudio, chat e conteúdo, sem inventar dados de audiência. Esses sinais orientam a avaliação editorial; a melhoria dos cortes ainda deve ser avaliada após a publicação. Retenção detalhada pela [YouTube Analytics API](https://developers.google.com/youtube/analytics/channel_reports#retrieving-a-report) exige OAuth do dono do canal e não está conectada nesta versão.
+
+### Gameplay com webcam acima do jogo
+
+`--gameplay-split` exporta em 9:16, com a webcam em movimento no topo, o jogo
+com recorte central na parte inferior e legendas menores na divisão. O modo
+dispensa a moldura ViraCortes e está disponível em `gameplay`, `run` e `render`.
+
+```powershell
+python -m clipper gameplay "<vídeo>" --gameplay-split
+python -m clipper render "out/<vídeo>" --gameplay-split --batch webcam --limit 1
+```
+
+Por padrão, o Clipper procura um rosto na periferia do quadro inicial para
+estimar o recorte da webcam. Se a detecção falhar ou precisar de ajuste, use
+`--webcam-crop X,Y,W,H`, com coordenadas em pixels do vídeo original, a partir
+do canto superior esquerdo.
 
 ## Como funciona
 

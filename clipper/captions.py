@@ -50,7 +50,8 @@ def group_words(words: list[Word], max_words: int, max_gap: float) -> list[list[
 
 
 def build_ass(words: list[Word], clip_start: float, clip_end: float,
-              style: CaptionStyle = CaptionStyle(), width: int = 1080, height: int = 1920) -> str:
+              style: CaptionStyle = CaptionStyle(), width: int = 1080, height: int = 1920,
+              margin_x: int = 60) -> str:
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -60,7 +61,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Main,{style.font},{style.size},{style.primary},{style.primary},{style.outline},&H80000000,-1,0,0,0,100,100,0,0,1,{style.outline_width},{style.shadow},2,60,60,{style.margin_v},1
+Style: Main,{style.font},{style.size},{style.primary},{style.primary},{style.outline},&H80000000,-1,0,0,0,100,100,0,0,1,{style.outline_width},{style.shadow},2,{margin_x},{margin_x},{style.margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text

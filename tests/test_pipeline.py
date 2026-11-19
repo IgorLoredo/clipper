@@ -35,7 +35,26 @@ def test_rendering_new_batch_preserves_existing_clips(tmp_path, monkeypatch):
     assert meta.read_text() == '{"original": true}'
     new_manifest = json.loads((tmp_path / "clips/longos-02/clips.json").read_text())
     assert new_manifest[0]["start"] == 80
+    entry = new_manifest[0]
+    publication = tmp_path / "clips/longos-02" / entry["publication_file"]
+    assert publication.stem == (publication.parent / entry["file"]).stem
+    assert publication.read_text(encoding="utf-8") == (
+        "Título sugerido\nnew\n\nDescrição\nhook\n\nTrecho de “video”.\n\n"
+        "Hashtags\n#ViraCortes #Shorts #Podcast\n"
+    )
     assert pipeline.existing_ranges(tmp_path) == ((0, 70), (80, 150))
+
+
+def test_publication_uses_approved_campaign_copy():
+    highlight = Highlight(0, 24, 90, "Título original", "Gancho", "Motivo", campaign_review={
+        "approved": True, "suggested_title": "Título da campanha",
+        "caption": "Texto para publicar.", "hashtags": ["#Campanha", "campanha", "ViraCortes"],
+    })
+    text = pipeline.publication_text(highlight, "Vídeo", "gameplay", "pt")
+    assert "Título da campanha\n\nDescrição\nTexto para publicar." in text
+    assert text.endswith("#Campanha #ViraCortes\n")
+    highlight.campaign_review["approved"] = False
+    assert "#Campanha" not in pipeline.publication_text(highlight, "Vídeo", "gameplay", "pt")
 
 
 def test_selection_cache_separates_duration_count_and_exclusions():
