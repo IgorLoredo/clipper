@@ -36,6 +36,11 @@ Rules:
 - "reason" explains in at most 20 words why the clip would perform."""
 
 CONTENT_GUIDANCE = {
+    "gameplay": """\nGameplay-specific editorial rules:
+- Prefer an immediately understandable challenge, discovery or reaction with a clear payoff.
+- Favor a visible action or consequence when the transcript gives evidence for it.
+- Treat audio spikes as leads and avoid inventing gameplay details from ambiguous dialogue.
+""",
     "anime": """\nAnime-specific editorial rules:
 - Prefer self-contained dialogue, a reveal, an emotional turning point, a memorable line or a clear story payoff.
 - Do not invent visual events from the transcript. Avoid a clip that needs unseen context to make sense.
@@ -298,6 +303,7 @@ def detect(transcript: Transcript, peaks: list[Peak], llm: JsonLLM, max_clips: i
               "max_clips": max_clips, "excluded": [list(span) for span in excluded],
               "window_seconds": window_seconds,
               "content_type": content_type,
+              **({"gameplay_prompt": 2} if content_type == "gameplay" else {}),
               "campaign_fingerprint": hashlib.sha256(campaign_context.encode()).hexdigest() if campaign_context else "",
               "signals_fingerprint": hashlib.sha256(json.dumps([asdict(p) for p in peaks], sort_keys=True).encode()).hexdigest()}
     if preference:

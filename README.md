@@ -164,6 +164,19 @@ o Clipper valida as respostas e aproveita as janelas já concluídas. Com
 `--campaign`, o mesmo fluxo também atende à revisão antes da renderização.
 O modo Codex dispensa chave de API de LLM no Clipper.
 
+Para vídeos de gameplay, há um atalho:
+
+```bash
+python -m clipper gameplay "video.mp4" --lang pt --max-clips 6
+```
+
+O Clipper primeiro seleciona pela transcrição. Depois envia ao Codex uma grade
+de quatro quadros por trecho, com até 12 candidatos da transcrição e quatro
+trechos adicionais sugeridos por picos de áudio. A revisão procura um gancho
+visual, ação compreensível e um desfecho, inclusive em trechos com pouca fala.
+Os quadros são extraídos localmente. Abrir as grades no Codex acrescenta
+contexto visual à conversa. Use `--no-visual-review` para pular essa etapa.
+
 No Windows, se o Whisper detectar uma GPU mas falhar ao carregar
 `cublas64_12.dll`, rode em CPU. Por exemplo, no PowerShell:
 

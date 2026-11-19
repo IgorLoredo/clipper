@@ -28,9 +28,11 @@ class CodexExchange:
         self.directory = directory
         self.model = model
 
-    def __call__(self, system: str, user: str, schema: dict) -> dict:
+    def __call__(self, system: str, user: str, schema: dict, *, images: list[dict] | None = None) -> dict:
         request = {"format": "clipper-codex-v1", "model": self.model,
                    "system": system, "user": user, "schema": schema}
+        if images:
+            request["images"] = images
         contents = json.dumps(request, ensure_ascii=False, sort_keys=True, allow_nan=False)
         request_id = hashlib.sha256(contents.encode("utf-8")).hexdigest()
         request_path = (self.directory / f"{request_id}.request.json").resolve()

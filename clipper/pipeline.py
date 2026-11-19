@@ -7,6 +7,7 @@ from pathlib import Path
 from clipper import detect as detect_mod
 from clipper import attention, campaign, llm, reframe, signals
 from clipper.captions import build_ass
+from clipper.codex_exchange import CodexExchange
 from clipper.config import Settings
 from clipper.detect import Highlight
 from clipper.ingest import Source, fetch, slugify
@@ -33,6 +34,7 @@ class Options:
     campaign_file: Path | None = None
     review_llm: str | None = None
     review_mode: str = "strict"
+    visual_review: bool = True
 
 
 def existing_ranges(workdir: Path) -> tuple[tuple[float, float], ...]:
@@ -92,12 +94,28 @@ def run(source: str, out_root: Path, settings: Settings, options: Options, chat:
     if preference:
         run_id += f"-speaker-{preference.fingerprint}"
     cache = src.workdir / f"highlights.{run_id}.json"
+    visual_review = options.visual_review and content_type == "gameplay" and settings.llm_provider == "codex"
+    shortlist_size = min(12, options.max_clips + 4) if visual_review else options.max_clips
+    if visual_review:
+        cache = cache.with_suffix(".shortlist.json")
     highlights = detect_mod.detect(
-        transcript, peaks, llm.build(settings), options.max_clips,
+        transcript, peaks, llm.build(settings), shortlist_size,
         options.min_dur, options.max_dur, cache, excluded=excluded, preference=preference,
         window_seconds=options.llm_window_seconds, content_type=content_type,
         campaign_context=brief.summary() if brief else "",
     )
+    if visual_review:
+        from clipper.gameplay import review
+
+        highlights = review(src.video, transcript, highlights, peaks, excluded,
+                            options.min_dur, options.max_dur, options.max_clips,
+                            CodexExchange(settings.codex_directory, settings.model_for("codex")),
+                            speaker_weight=preference.weight if preference else None,
+                            campaign_context=brief.summary() if brief else "")
+        run_id += "-visual"
+        cache = src.workdir / f"highlights.{run_id}.json"
+        cache.write_text(json.dumps([asdict(clip) for clip in highlights], ensure_ascii=False, indent=2),
+                         encoding="utf-8")
     if brief:
         reviewer_settings = settings.with_llm(options.review_llm) if options.review_llm else settings
         review_key = f"campaign-review-{brief.fingerprint}-{hashlib.sha256(cache.read_bytes()).hexdigest()[:10]}.json"
@@ -163,3 +181,10 @@ def render_all(src: Source, transcript: Transcript, highlights: list[Highlight],
             manifest[-1]["engagement"] = attention_context.interval(h.start, h.end)
         (clips_dir / "clips.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     (clips_dir / "clips.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    if content_type == "gameplay":
+        print(f"\nGameplay | {len(manifest)} corte(s) em {clips_dir.resolve()}", flush=True)
+        for item in manifest:
+            start = int(item["start"])
+            minutes, seconds = divmod(start, 60)
+            duration = item["end"] - item["start"]
+            print(f"  {minutes:02d}:{seconds:02d}  {duration:.0f}s  {item['title']}", flush=True)

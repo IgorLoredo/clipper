@@ -19,7 +19,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out", default="out", help="output root folder (default: out)")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    run_p = sub.add_parser("run", help="download/transcribe/detect/render")
+    run_p = sub.add_parser("run", aliases=["gameplay"], help="download, select and render clips",
+                           description="Use 'clipper gameplay VIDEO' for the Codex gameplay profile.")
     run_p.add_argument("source", help="URL (YouTube, Twitch, Kick...) or local video file")
     run_p.add_argument("--max-clips", type=int, default=8)
     run_p.add_argument("--min-dur", type=float, default=20.0)
@@ -28,6 +29,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--chat", default=None, help="chat log: yt-dlp live_chat.json, TwitchDownloader JSON or list of seconds")
     run_p.add_argument("--batch", default=None, help="name for a new batch of clips; existing batches are preserved")
     run_p.add_argument("--exclude-existing", action="store_true", help="avoid moments already rendered as clips")
+    run_p.add_argument("--no-visual-review", action="store_true",
+                       help="skip frame review for Codex gameplay and select by transcript")
     run_p.add_argument("--prefer-speaker", default=None, help="participant to prioritize using supplied speaker timestamps")
     run_p.add_argument("--speaker-turns", type=Path, default=None, help="JSON with start/end/speaker annotations; required with --prefer-speaker")
     run_p.add_argument("--speaker-mode", choices=("prefer", "only"), default="prefer", help="prefer this participant or allow only their speech")
@@ -75,6 +78,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     args = build_parser().parse_args(argv)
+    if args.command == "gameplay":
+        args.command = "run"
+        args.content_type = "gameplay"
+        args.llm = args.llm or "codex"
     if args.command == "diarize":
         from clipper.diarize import run as diarize
         try:
@@ -127,12 +134,15 @@ def main(argv: list[str] | None = None) -> int:
                           speaker_mode=args.speaker_mode, speaker_weight=args.speaker_weight,
                           content_type=args.content_type,
                           llm_window_seconds=args.llm_window_seconds or (300.0 if args.notebook else 900.0),
-                          campaign_file=args.campaign, review_llm=args.review_llm, review_mode=args.review_mode)
+                          campaign_file=args.campaign, review_llm=args.review_llm, review_mode=args.review_mode,
+                          visual_review=not args.no_visual_review)
         try:
             workdir = run(args.source, Path(args.out), settings, options, args.chat)
         except CodexResponseRequired as exc:
-            print(f"[codex] {exc}\nAnswer the requests and rerun the same command to resume.",
-                  file=sys.stderr, flush=True)
+            print(f"\nCodex | {len(exc.requests)} pedido(s) aguardando resposta", flush=True)
+            for request in exc.requests:
+                print(request, flush=True)
+            print("Responda com $clipper-cortes e repita o mesmo comando para continuar.", flush=True)
             return 3
         except FileNotFoundError as exc:
             print(f"[error] video not found: {exc}. Pass a URL (https://...) or the path of a video file.",
