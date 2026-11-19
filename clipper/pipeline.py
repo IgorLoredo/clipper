@@ -1,6 +1,5 @@
 import json
 import hashlib
-import shutil
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
@@ -11,6 +10,7 @@ from clipper.captions import CaptionStyle, build_ass
 from clipper.codex_exchange import CodexExchange
 from clipper.config import Settings
 from clipper.detect import Highlight
+from clipper.gameplay_selection import GameplayCriteria
 from clipper.ingest import Source, fetch, slugify
 from clipper.render import OUT_H, SPLIT_WEBCAM_HEIGHT, render_clip, render_preview
 from clipper.transcribe import Transcript, transcribe
@@ -42,6 +42,8 @@ class Options:
     render_limit: int | None = None
     gameplay_split: bool = False
     webcam_crop: tuple[int, int, int, int] | None = None
+    select_only: bool = False
+    gameplay_criteria: GameplayCriteria | None = None
 
 
 def existing_ranges(workdir: Path) -> tuple[tuple[float, float], ...]:
@@ -96,6 +98,9 @@ def run(source: str, out_root: Path, settings: Settings, options: Options, chat:
     llm_id = slugify(f"{settings.llm_provider}-{settings.model_for(settings.llm_provider)}", 80)
     excluded = existing_ranges(src.workdir) if options.exclude_existing else ()
     run_id = selection_id(llm_id, options, excluded)
+    if content_type == "gameplay":
+        digest = hashlib.sha256(repr(options.gameplay_criteria or GameplayCriteria()).encode()).hexdigest()[:10]
+        run_id += f"-gameplay-{digest}"
     if context.fingerprint:
         run_id += f"-attention-{context.fingerprint}"
     if preference:
@@ -110,11 +115,12 @@ def run(source: str, out_root: Path, settings: Settings, options: Options, chat:
         options.min_dur, options.max_dur, cache, excluded=excluded, preference=preference,
         window_seconds=options.llm_window_seconds, content_type=content_type,
         campaign_context=brief.summary() if brief else "",
+        **({"gameplay_criteria": options.gameplay_criteria} if content_type == "gameplay" else {}),
     )
-    if visual_review:
+    if visual_review and highlights:
         from clipper.gameplay import review
 
-        highlights = review(src.video, transcript, highlights, peaks, excluded,
+        highlights = review(src.video, transcript, highlights, [], excluded,
                             options.min_dur, options.max_dur, options.max_clips,
                             CodexExchange(settings.codex_directory, settings.model_for("codex")),
                             speaker_weight=preference.weight if preference else None,
@@ -139,9 +145,17 @@ def run(source: str, out_root: Path, settings: Settings, options: Options, chat:
             print(f"[campaign] strict mode will render {len(highlights)} approved clips", flush=True)
     latest = src.workdir / "highlights.json"
     if not options.batch or not latest.exists():
-        shutil.copyfile(cache, latest)
+        latest.write_text(json.dumps([asdict(clip) for clip in highlights], ensure_ascii=False, indent=2),
+                          encoding="utf-8")
     print(f"[run] {len(highlights)} highlights selected by {llm_id}", flush=True)
-    render_all(src, transcript, highlights, settings, options, options.batch or run_id, context, content_type)
+    if options.select_only:
+        metadata = src.workdir / "source.json"
+        if not metadata.exists():
+            metadata.write_text(json.dumps({"video": str(src.video), "title": src.title}, ensure_ascii=False),
+                                encoding="utf-8")
+        print(f"[select] {cache}", flush=True)
+    else:
+        render_all(src, transcript, highlights, settings, options, options.batch or run_id, context, content_type)
     attention.save_report(context, src.workdir)
     return src.workdir
 

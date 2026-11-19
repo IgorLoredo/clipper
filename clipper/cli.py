@@ -1,4 +1,5 @@
 import argparse
+import json
 import sys
 import math
 from pathlib import Path
@@ -9,6 +10,7 @@ from clipper.config import Settings, load_dotenv
 from clipper.llm import PROVIDERS, ProvidersExhausted
 from clipper.pipeline import Options, rerender, run
 from clipper.attention import analyze
+from clipper.gameplay_selection import GameplayCriteria
 
 
 def _webcam_crop(value: str) -> tuple[int, int, int, int]:
@@ -47,11 +49,13 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("source", help="URL (YouTube, Twitch, Kick...) or local video file")
     run_p.add_argument("--max-clips", type=int, default=8)
     run_p.add_argument("--min-dur", type=float, default=20.0)
-    run_p.add_argument("--max-dur", type=float, default=75.0)
+    run_p.add_argument("--max-dur", type=float, help="maximum clip length in seconds (105 for gameplay, 75 otherwise)")
     run_p.add_argument("--lang", default=None, help="force transcript language, e.g. pt")
     run_p.add_argument("--chat", default=None, help="chat log: yt-dlp live_chat.json, TwitchDownloader JSON or list of seconds")
     run_p.add_argument("--batch", default=None, help="name for a new batch of clips; existing batches are preserved")
     run_p.add_argument("--exclude-existing", action="store_true", help="avoid moments already rendered as clips")
+    run_p.add_argument("--select-only", action="store_true", help="save selected timestamps without rendering")
+    run_p.add_argument("--gameplay-criteria", type=Path, help="JSON overrides for gameplay ranking weights and thresholds")
     run_p.add_argument("--no-visual-review", action="store_true",
                        help="skip frame review for Codex gameplay and select by transcript")
     run_p.add_argument("--prefer-speaker", default=None, help="participant to prioritize using supplied speaker timestamps")
@@ -125,6 +129,8 @@ def main(argv: list[str] | None = None) -> int:
         report = analyze(Path(args.workdir), args.source)
         print(f"[done] metrics in {report} and {report.with_suffix('.md')}", flush=True)
         return 0
+    if args.command == "run" and args.max_dur is None:
+        args.max_dur = 105.0 if args.content_type == "gameplay" or args.gameplay_split else 75.0
     if args.command != "overlay" and args.webcam_crop is not None and not args.gameplay_split:
         parser.error("--webcam-crop requires --gameplay-split")
     if args.command != "overlay" and args.gameplay_split:
@@ -191,7 +197,18 @@ def main(argv: list[str] | None = None) -> int:
                           visual_review=not args.no_visual_review, brand=brand, preview_at=args.preview_at,
                           gameplay_split=args.gameplay_split, webcam_crop=args.webcam_crop)
         try:
+            options.select_only = args.select_only
+            if args.gameplay_criteria:
+                data = json.loads(args.gameplay_criteria.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    raise ValueError("gameplay criteria must be a JSON object")
+                try:
+                    options.gameplay_criteria = GameplayCriteria(**data)
+                except TypeError as exc:
+                    raise ValueError(f"invalid gameplay criteria: {exc}") from exc
             workdir = run(args.source, Path(args.out), settings, options, args.chat)
+            if options.select_only:
+                return 0
         except CodexResponseRequired as exc:
             print(f"\nCodex | {len(exc.requests)} pedido(s) aguardando resposta", flush=True)
             for request in exc.requests:

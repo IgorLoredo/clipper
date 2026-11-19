@@ -5,6 +5,10 @@ description: Seleciona cortes de vídeos longos no projeto Clipper usando o Code
 
 # Cortes com o Clipper
 
+Ao iniciar uma seleção sem tipo definido, pergunte uma vez: **Qual é o tipo de conteúdo do vídeo? 1. Gameplay 2. Podcast.** Se o pedido já identificar o tipo, use a informação disponível. Para podcast, use `run --content-type podcast`. Para gameplay, use o comando `gameplay`. Reutilize a escolha ao retomar.
+
+Quando o usuário quiser apenas os trechos, acrescente `--select-only` e apresente os timestamps selecionados. Pedidos de gameplay com o campo `reviews` pedem um parecer por candidato, inclusive os descartados. Cite os índices das unidades de fala para setup, desenvolvimento, clímax e encerramento e dê notas separadas para cada critério. Leia o relatório `*.candidates.json` para conferir os cortes e motivos.
+
 Execute a partir do checkout que contém `pyproject.toml` e o pacote `clipper`. Use o ambiente Python do projeto. Para um vídeo ou URL, rode `python -m clipper run "<fonte>" --llm codex` com as opções de duração, quantidade, campanha e lote solicitadas. Guarde o comando exato e o diretório de execução para retomar.
 
 Para gameplay, prefira `python -m clipper gameplay "<fonte>"`. Esse comando usa o Codex e revisa quadros dos candidatos. Use `--no-visual-review` quando o usuário pedir seleção só pela transcrição.
@@ -16,6 +20,8 @@ Use o padrão do checkout para novos lotes. `run`, `gameplay` e `render` aplicam
 O renderizador testa os encoders de GPU e usa CPU se necessário. Para conferir o resultado antes da exportação, use `render "<workdir>" --preview-only --preview-at <segundos>` em um trabalho com `highlights.json`. O tempo é relativo ao início do corte.
 
 ## Gameplay com webcam acima do jogo
+
+Na avaliação de gameplay, dê uma nota de quebra de expectativa quando o próprio trecho prepara um resultado e entrega outro. Por exemplo, o jogador promete acertar de primeira e erra. O peso padrão é 10% e pode ser ajustado com `--gameplay-criteria` usando o campo `expectation_break`.
 
 Quando o usuário pedir o layout dividido, use `--gameplay-split`. O clipe sai em 9:16, com a webcam em movimento no topo, o jogo com recorte central embaixo e legendas menores na divisão, sem moldura ViraCortes.
 

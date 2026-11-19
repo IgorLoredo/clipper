@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from clipper.codex_exchange import CodexResponseRequired
+from clipper import gameplay_selection as gameplay
 from clipper.llm import JsonLLM, LLMRefusal, ProvidersExhausted
 from clipper.signals import Peak
 from clipper.transcribe import Transcript, Word
@@ -36,11 +37,6 @@ Rules:
 - "reason" explains in at most 20 words why the clip would perform."""
 
 CONTENT_GUIDANCE = {
-    "gameplay": """\nGameplay-specific editorial rules:
-- Prefer an immediately understandable challenge, discovery or reaction with a clear payoff.
-- Favor a visible action or consequence when the transcript gives evidence for it.
-- Treat audio spikes as leads and avoid inventing gameplay details from ambiguous dialogue.
-""",
     "anime": """\nAnime-specific editorial rules:
 - Prefer self-contained dialogue, a reveal, an emotional turning point, a memorable line or a clear story payoff.
 - Do not invent visual events from the transcript. Avoid a clip that needs unseen context to make sense.
@@ -240,13 +236,15 @@ def _window_key(start: float, end: float) -> str:
     return f"{start:.1f}-{end:.1f}"
 
 
-def _ask_window(llm: JsonLLM, system: str, user: str, index: int) -> dict:
+def _ask_window(llm: JsonLLM, system: str, user: str, index: int, gameplay_batch=False) -> dict:
     try:
-        payload = llm(system, user, SCHEMA)
+        payload = llm(system, user, gameplay.SCHEMA if gameplay_batch else SCHEMA)
     except LLMRefusal as exc:
         print(f"[detect] chunk {index} refused: {exc}", flush=True)
         return {"llm": getattr(llm, "label", ""), "refused": True, "highlights": []}
     label = getattr(llm, "label", "")
+    if gameplay_batch:
+        return {"llm": label, "reviews": payload["reviews"]}
     found = [asdict(h) | {"llm": label} for h in parse_highlights(payload)]
     return {"llm": label, "highlights": found}
 
@@ -289,12 +287,18 @@ def detect(transcript: Transcript, peaks: list[Peak], llm: JsonLLM, max_clips: i
            preference: SpeakerPreference | None = None,
            window_seconds: float = 900.0,
            content_type: str = "podcast",
-           campaign_context: str = "") -> list[Highlight]:
+           campaign_context: str = "", gameplay_criteria: gameplay.GameplayCriteria | None = None) -> list[Highlight]:
     spans = windows(transcript.duration, size=window_seconds)
+    criteria = (gameplay_criteria or gameplay.GameplayCriteria()) if content_type == "gameplay" else None
+    units = gameplay.speech_units(transcript.words) if criteria else []
+    clusters = gameplay.reaction_clusters(units, peaks, min_dur, max_dur) if criteria else []
+    report_path = cache.with_suffix(".candidates.json")
     per_chunk = candidates_per_window(max_clips, len(spans))
     system = SYSTEM_PROMPT.format(min_dur=int(min_dur), max_dur=int(max_dur),
                                   per_chunk=per_chunk, language=transcript.language)
     system += CONTENT_GUIDANCE.get(content_type, "")
+    if criteria:
+        system = gameplay.SYSTEM
     if campaign_context:
         system += "\nCampaign requirements:\n" + campaign_context + "\nChoose only moments that can honestly fit these requirements.\n"
     if preference:
@@ -303,41 +307,57 @@ def detect(transcript: Transcript, peaks: list[Peak], llm: JsonLLM, max_clips: i
               "max_clips": max_clips, "excluded": [list(span) for span in excluded],
               "window_seconds": window_seconds,
               "content_type": content_type,
-              **({"gameplay_prompt": 2} if content_type == "gameplay" else {}),
+              **({"gameplay_prompt": 4, "criteria": asdict(criteria),
+                  "transcript": hashlib.sha256(repr(transcript).encode()).hexdigest()} if criteria else {}),
               "campaign_fingerprint": hashlib.sha256(campaign_context.encode()).hexdigest() if campaign_context else "",
               "signals_fingerprint": hashlib.sha256(json.dumps([asdict(p) for p in peaks], sort_keys=True).encode()).hexdigest()}
     if preference:
         params["speaker_preference"] = preference.fingerprint
     progress = progress_path(cache)
     done = _load_progress(progress, params)
-    if cache.is_file() and progress.is_file():
+    if cache.is_file() and progress.is_file() and (not criteria or report_path.is_file()):
         saved = json.loads(progress.read_text(encoding="utf-8"))
         if saved.get("params") == params:
             return [Highlight(**h) for h in json.loads(cache.read_text(encoding="utf-8"))]
     keys = []
     pending = []
+    batches = {}
+    report = {}
     for index, (start, end) in enumerate(spans, 1):
         if preference and preference.mode == "only" and not any(
                 t.speaker.casefold() == preference.speaker.casefold() and t.start < end and t.end > start
                 for t in preference.turns):
             continue
-        words = transcript.words_between(start, end)
-        if len(words) < 30:
-            continue
         key = _window_key(start, end)
+        if criteria:
+            boundary = spans[index][0] if index < len(spans) else end
+            pool = [c for c in clusters if start <= c["start"] < boundary]
+            batch = sorted(pool, key=lambda c: c["reaction_strength"], reverse=True)[:max(4, per_chunk)]
+            for cluster in pool:
+                report[cluster["id"]] = cluster | {"status": "below_reaction_shortlist"}
+            if not batch:
+                continue
+            batches[key] = batch
+        else:
+            words = transcript.words_between(start, end)
+            if len(words) < 30:
+                continue
         keys.append(key)
         if key in done:
             print(f"[detect] chunk {index}/{len(spans)} already done by {done[key].get('llm') or '?'}", flush=True)
             continue
         print(f"[detect] chunk {index}/{len(spans)} ({start:.0f}s-{end:.0f}s)", flush=True)
-        user = "\n\n".join(part for part in (
-            format_hints(peaks, start, end), "Transcript:\n" + format_lines(words, preference=preference)) if part)
+        if criteria:
+            user = gameplay.format_batch(batch, units, preference, min_dur, max_dur)
+        else:
+            user = "\n\n".join(part for part in (
+                format_hints(peaks, start, end), "Transcript:\n" + format_lines(words, preference=preference)) if part)
         already_used = [(a, b) for a, b in excluded if a < end and b > start]
         if already_used:
             user += ("\n\nThese intervals already became clips. Choose DIFFERENT moments and avoid overlap: "
                      + json.dumps(already_used))
         try:
-            done[key] = _ask_window(llm, system, user, index)
+            done[key] = _ask_window(llm, system, user, index, gameplay_batch=bool(criteria))
         except CodexResponseRequired as exc:
             pending.extend(exc.requests)
             continue
@@ -350,10 +370,49 @@ def detect(transcript: Transcript, peaks: list[Peak], llm: JsonLLM, max_clips: i
         raise CodexResponseRequired(list(dict.fromkeys(pending)))
     if keys:
         print(f"[detect] chunks by LLM: {_usage_summary(done, keys)}", flush=True)
-    candidates = _snap_all(done, keys, transcript, min_dur, max_dur, preference)
     previous = [Highlight(a, b, 0, "", "", "") for a, b in excluded]
-    candidates = [h for h in candidates if all(overlap_ratio(h, old) < 0.3 for old in previous)]
-    chosen = dedupe(candidates)[:max_clips]
+    if criteria:
+        candidates = []
+        for key, batch in batches.items():
+            verdicts = {item["id"]: item for item in done[key].get("reviews", [])}
+            for cluster in batch:
+                identifier = cluster["id"]
+                item = verdicts.get(identifier)
+                bounds, rejection = gameplay.validate(item, cluster, units, criteria, min_dur, max_dur, transcript.duration)
+                entry = report[identifier] = cluster | {"verdict": item, "status": rejection}
+                if item:
+                    entry["final_score"] = criteria.score(item)
+                if not bounds:
+                    continue
+                start, end = bounds
+                score = entry["final_score"]
+                entry["clip_bounds"] = bounds
+                clip = Highlight(start, end, round(score), item["title"][:70], item["hook"], item["reason"],
+                                 done[key]["llm"], selection_score=score)
+                if preference:
+                    clip.speaker_focus = preference.evaluate(transcript.words, start, end)
+                    if not clip.speaker_focus["eligible"]:
+                        entry["status"] = "Speaker restriction"
+                        continue
+                    clip.selection_score = round((1 - preference.weight) * score
+                                                 + preference.weight * 100 * clip.speaker_focus["preferred_speech_share"], 2)
+                if any(overlap_ratio(clip, old) >= 0.3 for old in previous):
+                    entry["status"] = "Overlaps an existing clip"
+                    continue
+                entry["status"] = "Outside ranking limit or overlaps a higher-ranked candidate"
+                candidates.append((identifier, clip))
+        chosen = dedupe([clip for _, clip in candidates])[:max_clips]
+        for identifier, clip in candidates:
+            if any(clip is selected for selected in chosen):
+                report[identifier]["status"] = "selected"
+        report_path.write_text(json.dumps({"status": "selected" if chosen else "no_qualified_candidates",
+                                           "candidates": list(report.values())}, ensure_ascii=False, indent=2),
+                               encoding="utf-8")
+        print(f"[gameplay] {len(chosen)} qualified clips; report: {report_path}", flush=True)
+    else:
+        candidates = _snap_all(done, keys, transcript, min_dur, max_dur, preference)
+        candidates = [h for h in candidates if all(overlap_ratio(h, old) < 0.3 for old in previous)]
+        chosen = dedupe(candidates)[:max_clips]
     _save_progress(progress, params, done)
     cache.write_text(json.dumps([asdict(h) for h in chosen], ensure_ascii=False, indent=2), encoding="utf-8")
     return chosen

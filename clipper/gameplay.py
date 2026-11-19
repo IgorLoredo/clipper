@@ -117,6 +117,8 @@ def review(video: Path, transcript: Transcript, highlights: list[Highlight], pea
         print("[gameplay] no preview frames decoded; using transcript selection", flush=True)
         return [clip for clip in candidates if clip.title][:limit]
     system = SYSTEM + f" Select at most {limit} clips. Write in language {transcript.language}."
+    if highlights and all(clip.selection_score is not None for clip in highlights):
+        system += " Candidates are ordered by narrative ranking. Keep that priority unless the frames undermine the story."
     if campaign_context:
         system += "\nCampaign requirements:\n" + campaign_context
     print(f"[gameplay] visual review: {len(images)} frame grids", flush=True)
@@ -135,6 +137,9 @@ def review(video: Path, transcript: Transcript, highlights: list[Highlight], pea
         if speaker_weight is not None and clip.speaker_focus:
             share = clip.speaker_focus["preferred_speech_share"]
             ranking = round((1 - speaker_weight) * score + speaker_weight * 100 * share, 2)
-        selected[index] = replace(clip, score=score, title=item["title"], hook=item["hook"],
-                                  reason=item["reason"], llm=f"codex:{exchange.model}", selection_score=ranking)
+        if clip.selection_score is not None:
+            selected[index] = clip
+        else:
+            selected[index] = replace(clip, score=score, title=item["title"], hook=item["hook"],
+                                      reason=item["reason"], llm=f"codex:{exchange.model}", selection_score=ranking)
     return dedupe(list(selected.values()))[:limit]
