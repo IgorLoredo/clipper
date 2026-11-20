@@ -176,7 +176,7 @@ def build_ass(words: list[Word], clip_start: float, clip_end: float,
               style: CaptionStyle = CaptionStyle(), width: int = 1080, height: int = 1920,
               margin_x: int = 60,
               template: CaptionTemplate | None = None, title: str = "", credit: str = "",
-              include_captions: bool = True) -> str:
+              include_captions: bool = True, opening: str = "") -> str:
     template = template or CaptionTemplate(width=width, height=height, caption=style)
     style, width, height = template.caption, template.width, template.height
     header = f"""[Script Info]
@@ -199,6 +199,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     inside = [w for w in words if w.end > clip_start and w.start < clip_end]
     clip_len = clip_end - clip_start
     lines = []
+    opening_end = min(clip_len, 5.2) if opening.strip() else 0.0
+    if opening_end > 0:
+        size = round(style.size * 1.25)
+        margin = max(1, style.margin_v - round(height * 52 / 1920))
+        text = f"{{\\fs{size}\\c{style.highlight}}}{ass_text(opening.upper())}"
+        lines.append(f"Dialogue: 1,0:00:00.00,{ass_time(opening_end)},Main,,0,0,{margin},,{text}")
     if template.title_enabled and title.strip():
         lines.append(f"Dialogue: 0,0:00:00.00,{ass_time(clip_len)},TemplateTitle,,0,0,0,,{ass_text(title)}")
     if template.brand_enabled and template.brand.strip():
@@ -213,6 +219,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             start = word.start - clip_start
             end = group[index + 1].start - clip_start if index + 1 < len(group) else word.end - clip_start
             start, end = max(0.0, start), min(clip_len, max(end, start + 0.05))
+            start = max(start, opening_end)
             if end <= start:
                 continue
             text = " ".join(

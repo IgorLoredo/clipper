@@ -40,7 +40,7 @@ class Options:
     preview_only: bool = False
     preview_at: float | None = None
     render_limit: int | None = None
-    gameplay_split: bool = False
+    gameplay_split: bool | None = None
     webcam_crop: tuple[int, int, int, int] | None = None
     select_only: bool = False
     gameplay_criteria: GameplayCriteria | None = None
@@ -205,7 +205,10 @@ def render_all(src: Source, transcript: Transcript, highlights: list[Highlight],
                settings: Settings, options: Options, variant: str,
                attention_context: attention.Attention | None = None,
                content_type: str = "podcast") -> None:
-    if options.gameplay_split and content_type != "gameplay":
+    gameplay_split = options.gameplay_split
+    if gameplay_split is None:
+        gameplay_split = content_type == "gameplay" and options.template_file is None
+    if gameplay_split and content_type != "gameplay":
         raise ValueError("split layout requires gameplay; use --content-type gameplay")
     source_meta = src.workdir / "source.json"
     if not source_meta.exists():
@@ -214,7 +217,7 @@ def render_all(src: Source, transcript: Transcript, highlights: list[Highlight],
     clips_dir = src.workdir / "clips" / next_variant(src.workdir, variant)
     clips_dir.mkdir(parents=True, exist_ok=False)
     print(f"[render] output {clips_dir}", flush=True)
-    brand = options.brand if not options.gameplay_split and not options.template_file and options.brand and options.brand.enabled else None
+    brand = options.brand if not gameplay_split and not options.template_file and options.brand and options.brand.enabled else None
     if brand:
         from clipper.brand_graphics import write_overlay
 
@@ -227,7 +230,7 @@ def render_all(src: Source, transcript: Transcript, highlights: list[Highlight],
         stem = f"{rank:02d}_{h.score:03d}_{slugify(h.title, 40)}"
         print(f"[render] {stem} ({h.start:.1f}s-{h.end:.1f}s)", flush=True)
         # Keep the established podcast call shape intact; gameplay opts into the new full-screen plan.
-        if options.gameplay_split:
+        if gameplay_split:
             framing = reframe.plan_gameplay_split(src.video, h.start, settings.face_model, options.webcam_crop)
         elif content_type == "gameplay" or (brand and brand.mode == "horizontal"):
             framing = reframe.plan(src.video, h.start, h.end, settings.face_model, content_type="gameplay")
@@ -239,17 +242,19 @@ def render_all(src: Source, transcript: Transcript, highlights: list[Highlight],
         if brand and brand.mode == "horizontal":
             overlay = write_overlay(brand, clips_dir / f"{stem}.overlay.png", aspect, h.title)
         subs = None
+        opening = " ".join((h.hook.strip() or h.title).split()) if gameplay_split else ""
         overlay_text = ((template.title_enabled and bool(h.title.strip()))
                         or (template.brand_enabled and bool(template.brand.strip()))
                         or (template.credit_enabled and bool(options.credit.strip() or template.credit.strip())))
-        if options.captions or overlay_text:
+        if options.captions or overlay_text or opening:
             subs = clips_dir / f"{stem}.ass"
             if options.template_file:
                 captions = build_ass(transcript.words, h.start, h.end, template=template,
                                      title=h.title, credit=options.credit, include_captions=options.captions)
-            elif options.gameplay_split:
+            elif gameplay_split:
                 style = CaptionStyle(size=64, outline_width=5, margin_v=OUT_H - SPLIT_WEBCAM_HEIGHT - 26)
-                captions = build_ass(transcript.words, h.start, h.end, style)
+                captions = build_ass(transcript.words, h.start, h.end, style,
+                                     include_captions=options.captions, opening=opening)
             elif brand:
                 w, height = brand.size
                 bottom, side = brand.caption_margins(aspect)

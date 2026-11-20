@@ -26,13 +26,14 @@ def _webcam_crop(value: str) -> tuple[int, int, int, int]:
 def _add_render_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-captions", action="store_true", help="do not burn captions")
     identity = parser.add_mutually_exclusive_group()
-    identity.add_argument("--viracortes", dest="viracortes", action="store_true", default=True,
-                          help="apply the ViraCortes identity (default)")
+    identity.add_argument("--viracortes", dest="viracortes", action="store_true", default=None,
+                          help="apply the ViraCortes identity instead of the default split layout")
     identity.add_argument("--no-viracortes", dest="viracortes", action="store_false",
                           help="export without the ViraCortes identity")
     parser.add_argument("--template-config", type=Path, help="custom ViraCortes JSON")
     parser.add_argument("--template-mode", choices=("existing", "horizontal", "fill"))
-    parser.add_argument("--gameplay-split", action="store_true", help="stack the webcam above gameplay without a frame")
+    parser.add_argument("--gameplay-split", action=argparse.BooleanOptionalAction,
+                        help="stack the webcam above gameplay (default without a custom template)")
     parser.add_argument("--webcam-crop", type=_webcam_crop, metavar="X,Y,W,H",
                         help="override opening-frame webcam detection with a crop in source pixels")
     parser.add_argument("--preview-at", type=float, metavar="SECONDS",
@@ -147,8 +148,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "run" and args.max_dur is None:
         args.max_dur = 105.0 if args.content_type == "gameplay" or args.gameplay_split else 75.0
-    if args.command != "overlay" and args.webcam_crop is not None and not args.gameplay_split:
-        parser.error("--webcam-crop requires --gameplay-split")
+    if args.command != "overlay" and args.webcam_crop is not None:
+        if args.gameplay_split is False:
+            parser.error("--webcam-crop requires the split layout")
+        args.gameplay_split = True
     if args.command != "overlay" and args.gameplay_split:
         if args.content_type not in {"auto", "gameplay"}:
             parser.error("--gameplay-split requires gameplay")
@@ -159,9 +162,15 @@ def main(argv: list[str] | None = None) -> int:
         build_parser().error("render max-clips must be positive")
     if args.command != "overlay" and args.gameplay_split and args.template:
         parser.error("--template cannot be combined with --gameplay-split")
+    if args.command != "overlay" and args.gameplay_split is None and (
+        args.viracortes or args.template_mode or args.template_config
+    ):
+        args.gameplay_split = False
     try:
         brand = None
-        if args.command == "overlay" or (args.viracortes and not args.gameplay_split and args.template is None):
+        if args.command == "overlay" or (
+            args.viracortes is not False and not args.gameplay_split and args.template is None
+        ):
             brand = load_branding(args.template_config, args.template_mode)
         if args.command == "overlay":
             from clipper.brand_graphics import write_overlay

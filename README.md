@@ -186,7 +186,7 @@ O modo Codex dispensa chave de API de LLM no Clipper.
 
 ### Identidade visual ViraCortes
 
-Os comandos `run`, `gameplay` e `render` aplicam por padrão a identidade
+Fora do layout dividido de gameplay, o Clipper aplica por padrão a identidade
 ViraCortes no modo `horizontal`. Use `--no-viracortes` para exportar sem a
 moldura. O FFmpeg compõe o PNG RGBA sobre o vídeo e queima o ASS na
 mesma passagem. O Clipper gera a arte uma vez por lote. A área central
@@ -404,9 +404,11 @@ Novos dados de replay usam outro cache de seleção. Quando o mapa público não
 
 ### Gameplay com webcam acima do jogo
 
-`--gameplay-split` exporta em 9:16, com a webcam em movimento no topo, o jogo
+O layout padrão para gameplay exporta em 9:16, com a webcam em movimento no topo, o jogo
 com recorte central na parte inferior e legendas menores na divisão. O modo
 dispensa a moldura ViraCortes e está disponível em `gameplay`, `run` e `render`.
+A chamada amarela aparece por 5,2 segundos, um pouco abaixo das legendas.
+As legendas de fala entram após a chamada. Use `--no-gameplay-split` para desativar o layout.
 
 ```powershell
 python -m clipper gameplay "<vídeo>" --gameplay-split

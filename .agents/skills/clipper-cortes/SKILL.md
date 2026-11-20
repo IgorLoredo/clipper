@@ -15,7 +15,7 @@ Para gameplay, prefira `python -m clipper gameplay "<fonte>" --llm <provedor>`. 
 
 ## Identidade ViraCortes
 
-Use o padrão do checkout para novos lotes. `run`, `gameplay` e `render` aplicam a identidade ViraCortes em modo horizontal, com fundo desfocado, borda neon roxa, play estilizado, título acima do gameplay e legendas abaixo quando há espaço. As cores e medidas vêm de `assets/templates/viracortes.json`. Consulte `assets/references/viracortes-moldura.png` para conferir a arte aprovada. O título vem da seleção de cada corte. Use `--no-viracortes` ou outro enquadramento se o usuário pedir.
+Para gameplay, use por padrão o layout vertical dividido. Quando o usuário escolher ViraCortes, use a identidade horizontal do checkout, configurada em `assets/templates/viracortes.json`.
 
 O renderizador testa os encoders de GPU e usa CPU se necessário. Para conferir o resultado antes da exportação, use `render "<workdir>" --preview-only --preview-at <segundos>` em um trabalho com `highlights.json`. O tempo é relativo ao início do corte.
 
@@ -23,7 +23,12 @@ O renderizador testa os encoders de GPU e usa CPU se necessário. Para conferir 
 
 Na avaliação de gameplay, dê uma nota de quebra de expectativa quando o próprio trecho prepara um resultado e entrega outro. Por exemplo, o jogador promete acertar de primeira e erra. O peso padrão é 10% e pode ser ajustado com `--gameplay-criteria` usando o campo `expectation_break`.
 
-Quando o usuário pedir o layout dividido, use `--gameplay-split`. O clipe sai em 9:16, com a webcam em movimento no topo, o jogo com recorte central embaixo e legendas menores na divisão, sem moldura ViraCortes.
+Para gameplay, use `--gameplay-split` para garantir a saída em 9:16, com webcam no topo e gameplay embaixo.
+
+- Escreva no campo `hook` uma chamada curta e específica que desperte curiosidade pelo clímax e preserve a surpresa do desfecho.
+- Mostre a chamada desde o início por 5,2 segundos. Use o estilo da legenda, em caixa alta, todo em amarelo (`&H00E5FF&` no ASS), com contorno escuro e fonte 25% maior. Centralize na horizontal e posicione a chamada 52 px abaixo da posição da legenda em 1080 × 1920. Com o estilo Main de margem vertical 1174, use margem 1122 na chamada.
+- Durante a chamada, oculte as legendas de fala do Clipper. Depois, retome as legendas na próxima fala, na posição original e com o destaque amarelo apenas na palavra atual.
+- Confira a abertura e a transição para a primeira legenda em uma prévia antes de exportar o lote.
 
 - Para selecionar e renderizar novos cortes, rode `python -m clipper gameplay "<fonte>" --gameplay-split`.
 - Para reutilizar cortes de um trabalho com `highlights.json`, rode `python -m clipper render "<workdir>" --gameplay-split --batch webcam`. Use `--limit 1` para renderizar só o primeiro corte do ranking.

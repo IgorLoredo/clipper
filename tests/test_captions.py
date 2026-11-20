@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from clipper.captions import ass_time, build_ass, group_words, load_template
+from clipper.captions import CaptionStyle, ass_time, build_ass, group_words, load_template
 from clipper.transcribe import Word
 
 
@@ -34,6 +34,19 @@ def test_build_ass_relative_times_highlight_and_escape():
 def test_build_ass_skips_words_outside_clip():
     ass = build_ass(words(), clip_start=12.5, clip_end=14.0)
     assert sum(line.startswith("Dialogue") for line in ass.splitlines()) == 1
+
+
+def test_gameplay_opening_uses_yellow_and_delays_spoken_captions():
+    style = CaptionStyle(size=64, margin_v=1174)
+    transcript = [Word("antes", 1.0, 1.5), Word("voltou", 5.0, 5.5)]
+    ass = build_ass(transcript, 0.0, 8.0, style, opening="As galinhas vão me dedurar?")
+    opening, caption = [line for line in ass.splitlines() if line.startswith("Dialogue")]
+    assert opening == (
+        r"Dialogue: 1,0:00:00.00,0:00:05.20,Main,,0,0,1122,,"
+        r"{\fs80\c&H00E5FF&}AS GALINHAS VÃO ME DEDURAR?"
+    )
+    assert caption.startswith("Dialogue: 0,0:00:05.20,0:00:05.50")
+    assert "VOLTOU" in caption
 
 
 def test_template_keeps_title_and_credit_when_spoken_captions_are_disabled(tmp_path):
