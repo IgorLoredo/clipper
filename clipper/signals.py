@@ -1,6 +1,7 @@
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Iterable
 
 import numpy as np
 
@@ -24,9 +25,38 @@ def robust_z(values: np.ndarray) -> np.ndarray:
     return (values - median) / mad
 
 
+def local_z(values: np.ndarray, window: int = 60, scale_floor: float = 1.5) -> np.ndarray:
+    """Rolling robust z-score ignoring deep silences so compressed audio still surfaces spikes."""
+    arr = np.asarray(values, dtype=float)
+    n = arr.size
+    if n == 0:
+        return arr
+    if window <= 1 or n <= window:
+        return robust_z(arr)
+    half = window // 2
+    out = np.zeros(n, dtype=float)
+    for i in range(n):
+        lo = max(0, i - half)
+        hi = min(n, i + half + 1)
+        seg = arr[lo:hi]
+        if float(np.max(seg) - np.min(seg)) < 1e-9:
+            out[i] = 0.0
+            continue
+        med = float(np.median(seg))
+        active = seg[seg >= med - 12.0]
+        basis = active if active.size >= 3 else seg
+        base_med = float(np.median(basis))
+        mad = float(np.median(np.abs(basis - base_med))) * 1.4826
+        spread = max(mad, float(np.std(basis)), scale_floor)
+        out[i] = (arr[i] - base_med) / spread
+    return out
+
+
 def find_peaks(levels: np.ndarray, bucket_seconds: float, kind: str,
-               threshold: float = 2.5, min_gap: float = 20.0, limit: int = 40) -> list[Peak]:
-    z = robust_z(np.asarray(levels, dtype=float))
+               threshold: float = 2.5, min_gap: float = 20.0, limit: int = 40,
+               local_window: int | None = None) -> list[Peak]:
+    arr = np.asarray(levels, dtype=float)
+    z = local_z(arr, local_window) if local_window else robust_z(arr)
     candidates = sorted(
         ((float(z[i]), i * bucket_seconds) for i in range(len(z)) if z[i] >= threshold),
         reverse=True,
@@ -40,12 +70,16 @@ def find_peaks(levels: np.ndarray, bucket_seconds: float, kind: str,
     return sorted(chosen, key=lambda p: p.time)
 
 
-def audio_levels(video: Path) -> np.ndarray:
+def audio_levels_from_chunks(chunks: Iterable[np.ndarray]) -> np.ndarray:
     levels = []
-    for samples in iter_audio_seconds(video):
+    for samples in chunks:
         rms = np.sqrt(np.mean(samples.astype(np.float64) ** 2)) if samples.size else 0.0
         levels.append(20 * np.log10(rms + 1e-6))
-    return np.array(levels)
+    return np.array(levels, dtype=float)
+
+
+def audio_levels(video: Path) -> np.ndarray:
+    return audio_levels_from_chunks(iter_audio_seconds(video))
 
 
 def parse_chat_times(path: Path) -> list[float]:
@@ -104,11 +138,20 @@ def chat_density(times: list[float], duration: float, bucket_seconds: float = 10
     return counts
 
 
-def collect(video: Path, duration: float, chat: Path | None, cache: Path) -> list[Peak]:
+def collect(video: Path, duration: float, chat: Path | None, cache: Path, *,
+            precomputed_levels: np.ndarray | None = None) -> list[Peak]:
     if cache.is_file():
         return [Peak(**p) for p in json.loads(cache.read_text(encoding="utf-8"))]
     print("[signals] measuring audio energy", flush=True)
-    peaks = find_peaks(audio_levels(video), 1.0, "audio")
+    levels = precomputed_levels if precomputed_levels is not None else audio_levels(video)
+    peaks = find_peaks(levels, 1.0, "audio")
+    if len(peaks) < 3 and levels.size >= 120:
+        local_peaks = find_peaks(levels, 1.0, "audio", threshold=2.5, min_gap=20.0, limit=40, local_window=60)
+        for candidate in local_peaks:
+            if all(abs(candidate.time - existing.time) >= 20.0 for existing in peaks):
+                peaks.append(candidate)
+        peaks = sorted(peaks, key=lambda p: p.strength, reverse=True)[:40]
+        peaks.sort(key=lambda p: p.time)
     if chat and chat.is_file():
         times = parse_chat_times(chat)
         print(f"[signals] {len(times)} chat messages", flush=True)

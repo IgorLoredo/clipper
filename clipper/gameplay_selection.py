@@ -52,6 +52,7 @@ PATTERNS = {
 }
 REACTIONS = re.compile("|".join(fr"(?P<{kind}>(?:{pattern}))" if kind == "shout"
                                 else fr"(?P<{kind}>\b(?:{pattern})\b)" for kind, pattern in PATTERNS.items()))
+LOW_WEIGHT_FILLERS = {"mano", "vamos la", "vamo la"}
 
 
 def speech_units(words: list[Word]) -> list[list[Word]]:
@@ -77,8 +78,26 @@ def acoustic_support(features: dict[str, float]) -> float:
     return pitch * onset
 
 
+def _expression_weight(kind: str, phrase: str) -> float:
+    if phrase in LOW_WEIGHT_FILLERS:
+        return 0.6
+    return 1.0 if kind in {"exclamation", "emphasis"} else 2.0
+
+
+def _nearest_unit(units: list[list[Word]], target_time: float, max_distance: float = 6.0) -> int | None:
+    best_idx = None
+    best_dist = max_distance
+    for idx, unit in enumerate(units):
+        start, end = unit[0].start, unit[-1].end
+        dist = 0.0 if start <= target_time <= end else min(abs(target_time - start), abs(target_time - end))
+        if dist < best_dist:
+            best_dist = dist
+            best_idx = idx
+    return best_idx
+
+
 def reaction_clusters(units, peaks, minimum, maximum, events: list[AudioEvent] | None = None, acoustic_bonus=3.0):
-    """Keep existing reaction grouping and add evidence around actual cue words."""
+    """Keep existing reaction grouping and add evidence around actual cue words and external signals."""
     reactions = []
     for index, unit in enumerate(units):
         tokens = [unicodedata.normalize("NFKD", word.text.casefold()).encode("ascii", "ignore").decode()
@@ -107,7 +126,7 @@ def reaction_clusters(units, peaks, minimum, maximum, events: list[AudioEvent] |
         diversity = len({kind for kind, _ in expressions})
         audio = max((p.strength for p in peaks if p.kind == "audio" and time - 2 <= p.time <= end + 2), default=0)
         legacy = min(12, max(0, audio * 2)) if events is None else 0
-        density = sum(1 if kind in {"exclamation", "emphasis"} else 2 for kind, _ in expressions) / max(4, end - time)
+        density = sum(_expression_weight(kind, phrase) for kind, phrase in expressions) / max(4, end - time)
         strength = round(min(100, 45 * density + 8 * diversity + legacy), 1)
         windows.append({"first": index, "last": group[-1][1], "start": time, "end": end,
                         "signals": expressions, "reaction_strength": strength,
@@ -125,6 +144,44 @@ def reaction_clusters(units, peaks, minimum, maximum, events: list[AudioEvent] |
             previous["reaction_times"] = sorted(set(previous["reaction_times"] + window["reaction_times"]))
         else:
             clusters.append(window)
+
+    # Also surface strong non-lexical signals (chat spikes, YouTube replay peaks,
+    # and high-confidence vocal pitch spikes) so deadpan humor and non-PT streams
+    # can still reach editorial review.
+    if units:
+        external_seeds: list[tuple[float, str, str, float]] = []
+        for peak in peaks:
+            if peak.kind == "chat":
+                external_seeds.append((peak.time, "chat_spike", f"z={peak.strength:.1f}",
+                                       min(85.0, 35.0 + peak.strength * 10.0)))
+            elif peak.kind == "replay":
+                external_seeds.append((peak.time, "replay_peak", f"index={peak.strength:.2f}",
+                                       min(85.0, 30.0 + peak.strength * 50.0)))
+        for event in events or []:
+            feats = event.features
+            if (event.event_type == "pitch_change"
+                    and feats.get("pitch_confidence", 0.0) >= 0.72
+                    and feats.get("pitch_z", 0.0) >= 3.5
+                    and feats.get("voice_band_ratio", 1.0) >= 0.35):
+                external_seeds.append((event.peak_time, "vocal_peak", f"pitch_z={feats['pitch_z']:.1f}",
+                                       min(80.0, 30.0 + feats["pitch_z"] * 6.0)))
+        for seed_time, kind, label, strength in sorted(external_seeds, key=lambda item: item[3], reverse=True):
+            if any(c["start"] - 6.0 <= seed_time <= c["end"] + 6.0 for c in clusters):
+                continue
+            unit_idx = _nearest_unit(units, seed_time, max_distance=6.0)
+            if unit_idx is None:
+                continue
+            clusters.append({
+                "first": unit_idx,
+                "last": unit_idx,
+                "start": seed_time,
+                "end": seed_time,
+                "signals": [(kind, label)],
+                "reaction_strength": round(strength, 1),
+                "reaction_times": [seed_time],
+            })
+        clusters.sort(key=lambda c: c["start"])
+
     ordered_events = sorted(events or [], key=lambda event: event.peak_time)
     event_times = [event.peak_time for event in ordered_events]
     for index, cluster in enumerate(clusters):
@@ -205,9 +262,48 @@ SCHEMA = {"type": "object", "required": ["reviews"], "additionalProperties": Fal
 }}
 
 
-def format_batch(clusters, units, preference, minimum, maximum):
+def _compact_acoustic(events: list[dict]) -> list[dict]:
+    compact = []
+    for ev in events[:4]:
+        feats = ev.get("features", {})
+        row = {"t": ev.get("peak_time"), "type": ev.get("event_type"), "str": ev.get("strength")}
+        for key in ("pitch_z", "onset_z", "pause_seconds", "voice_band_ratio"):
+            if key in feats and feats[key]:
+                row[key] = feats[key]
+        compact.append(row)
+    return compact
+
+
+def format_batch(clusters, units, preference, minimum, maximum, *, compact: bool = False):
     ids = {i for cluster in clusters for i, unit in enumerate(units)
            if unit[0].start < cluster["context_end"] and unit[-1].end > cluster["context_start"]}
+    if compact:
+        compact_clusters = []
+        for cluster in clusters:
+            entry = {
+                "id": cluster["id"],
+                "first": cluster["first"],
+                "last": cluster["last"],
+                "start": cluster["start"],
+                "end": cluster["end"],
+                "lead_in_start": cluster.get("lead_in_start", max(0, cluster["start"] - 8)),
+                "reaction_times": cluster.get("reaction_times", []),
+                "signals": cluster.get("signals", []),
+            }
+            if cluster.get("query_window"):
+                entry["query_window"] = True
+            if cluster.get("acoustic_events"):
+                entry["acoustic_events"] = _compact_acoustic(cluster["acoustic_events"])
+            compact_clusters.append(entry)
+        speech = [
+            ([i, units[i][0].start, units[i][-1].end, " ".join(w.text for w in units[i]),
+              preference.label(units[i][0])]
+             if preference else [i, units[i][0].start, units[i][-1].end, " ".join(w.text for w in units[i])])
+            for i in sorted(ids)
+        ]
+        return json.dumps({"minimum_seconds": minimum, "maximum_seconds": maximum,
+                           "clusters": compact_clusters, "speech": speech},
+                          ensure_ascii=False, separators=(",", ":"))
     return json.dumps({"minimum_seconds": minimum, "maximum_seconds": maximum, "clusters": clusters,
                        "speech": [[i, units[i][0].start, units[i][-1].end,
                                    " ".join(w.text for w in units[i]),

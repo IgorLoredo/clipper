@@ -46,6 +46,22 @@ def _pitch(frame: np.ndarray) -> tuple[float, float]:
     return RATE / lags[peak], float(ac[peak])
 
 
+def _voice_band_ratio(samples: np.ndarray) -> float:
+    """Fraction of spectral power in the 300-3400 Hz human voice band."""
+    if samples.size < 64:
+        return 0.0
+    centered = samples - float(np.mean(samples))
+    power = np.abs(np.fft.rfft(centered)) ** 2
+    if power.size < 2:
+        return 0.0
+    freqs = np.fft.rfftfreq(centered.size, d=1.0 / RATE)
+    total = float(np.sum(power[1:]))
+    if total <= 1e-9:
+        return 0.0
+    band = (freqs >= 300.0) & (freqs <= 3400.0)
+    return float(np.sum(power[band]) / total)
+
+
 def _normalize(values: np.ndarray, floor: float) -> np.ndarray:
     baseline = values[np.isfinite(values)]
     if not baseline.size:
@@ -55,7 +71,8 @@ def _normalize(values: np.ndarray, floor: float) -> np.ndarray:
     return np.nan_to_num((values - median) / scale)
 
 
-def analyze(chunks, words: list[Word], duration: float) -> list[AudioEvent]:
+def analyze(chunks, words: list[Word], duration: float, *,
+            levels_out: list[float] | None = None) -> list[AudioEvent]:
     """Use one-second buckets, sampling pitch only within transcribed speech."""
     rows = []
     valid_words = sorted((w for w in words if 0 <= w.start < w.end and w.start < duration), key=lambda w: w.start)
@@ -68,6 +85,9 @@ def analyze(chunks, words: list[Word], duration: float) -> list[AudioEvent]:
         if second >= duration or not len(chunk):
             break
         samples = np.asarray(chunk, dtype=float)
+        if levels_out is not None:
+            rms = float(np.sqrt(np.mean(samples ** 2))) if samples.size else 0.0
+            levels_out.append(20.0 * float(np.log10(rms + 1e-6)))
         blocks = [samples[i:i + RATE // 5] for i in range(0, len(samples), RATE // 5)]
         levels = [20 * np.log10(max(1, np.sqrt(np.mean(block ** 2)))) for block in blocks]
         rises = np.diff(levels, prepend=levels[0] if previous_level is None else previous_level)
@@ -87,10 +107,11 @@ def analyze(chunks, words: list[Word], duration: float) -> list[AudioEvent]:
                     f0.append((hz, confidence))
         pitch, confidence = np.median(f0, axis=0) if len(f0) >= 2 else (np.nan, 0.0)
         words_in_bucket = np.searchsorted(starts, second + 1) - np.searchsorted(starts, second)
-        rows.append((max(levels), max(0, rises[peak]), peak / 5, pitch, confidence, words_in_bucket))
+        voice_ratio = _voice_band_ratio(samples)
+        rows.append((max(levels), max(0, rises[peak]), peak / 5, pitch, confidence, words_in_bucket, voice_ratio))
     if not rows:
         return []
-    level, rise, peak_offset, pitch, confidence, counts = np.asarray(rows).T
+    level, rise, peak_offset, pitch, confidence, counts, voice_ratio = np.asarray(rows).T
     if not np.any(level > 36):
         return []
     semitones = 12 * np.log2(pitch)
@@ -123,7 +144,8 @@ def analyze(chunks, words: list[Word], duration: float) -> list[AudioEvent]:
         features = {"level_dbfs": round(level[i] - 20 * np.log10(32768), 2),
                     "rise_db": round(rise[i], 2), "onset_z": round(onset[i], 2),
                     "intensity_z": round(intensity[i], 2), "words_per_second": round(pace[i], 2),
-                    "pace_z": round(pace_z[i], 2), "pause_seconds": round(gaps[i], 2)}
+                    "pace_z": round(pace_z[i], 2), "pause_seconds": round(gaps[i], 2),
+                    "voice_band_ratio": round(float(voice_ratio[i]), 3)}
         if np.isfinite(pitch[i]):
             features.update(pitch_hz=round(pitch[i], 1), pitch_confidence=round(confidence[i], 3))
         if np.isfinite(pitch_shift[i]):
@@ -140,7 +162,7 @@ def analyze(chunks, words: list[Word], duration: float) -> list[AudioEvent]:
     return events
 
 
-def collect(video: Path, transcript: Transcript, cache: Path) -> list[AudioEvent] | None:
+def collect_with_levels(video: Path, transcript: Transcript, cache: Path) -> tuple[list[AudioEvent] | None, np.ndarray | None]:
     stat = video.stat()
     key = {"version": VERSION, "video": str(video.resolve()), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns,
            "transcript": hashlib.sha256(repr(transcript).encode()).hexdigest()}
@@ -148,14 +170,16 @@ def collect(video: Path, transcript: Transcript, cache: Path) -> list[AudioEvent
         try:
             data = json.loads(cache.read_text(encoding="utf-8"))
             if data["key"] == key:
-                return [AudioEvent(**event) for event in data["events"]]
+                return [AudioEvent(**event) for event in data["events"]], None
         except (OSError, ValueError, KeyError, TypeError):
             pass
+    levels: list[float] = []
     try:
-        events = analyze(iter_audio_seconds(video, RATE, check=True, align=True), transcript.words, transcript.duration)
+        events = analyze(iter_audio_seconds(video, RATE, check=True, align=True),
+                         transcript.words, transcript.duration, levels_out=levels)
     except (FFmpegError, OSError) as exc:
         print(f"[gameplay] acoustic analysis unavailable: {exc}; using existing signals", flush=True)
-        return None
+        return None, None
     report = {"key": key, "laughter_detection": "unavailable", "events": [asdict(event) for event in events]}
     with NamedTemporaryFile(mode="w", encoding="utf-8", dir=cache.parent, delete=False) as file:
         temporary = Path(file.name)
@@ -164,4 +188,9 @@ def collect(video: Path, transcript: Transcript, cache: Path) -> list[AudioEvent
         temporary.replace(cache)
     finally:
         temporary.unlink(missing_ok=True)
+    return events, (np.array(levels, dtype=float) if levels else None)
+
+
+def collect(video: Path, transcript: Transcript, cache: Path) -> list[AudioEvent] | None:
+    events, _ = collect_with_levels(video, transcript, cache)
     return events

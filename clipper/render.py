@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+import re
 
 from clipper import ffmpeg
 from clipper.branding import Branding
@@ -13,10 +14,13 @@ HARDWARE_ENCODERS = (
     ("h264_amf", "-quality", "balanced", "-rc", "cqp", "-qp_i", "20", "-qp_p", "20"),
 )
 CPU_ENCODER = ("libx264", "-preset", "veryfast", "-crf", "20")
+_FAILED_ENCODERS: set[str] = set()
+_ASS_SPECIAL = re.compile(r"[':\\\[\],;]")
 
 
 @lru_cache(maxsize=1)
 def preferred_encoder() -> tuple[str, ...]:
+    _FAILED_ENCODERS.clear()
     for encoder in HARDWARE_ENCODERS:
         try:
             ffmpeg.run(["-f", "lavfi", "-i", "color=size=320x240", "-frames:v", "1",
@@ -25,6 +29,14 @@ def preferred_encoder() -> tuple[str, ...]:
             continue
         return encoder
     return CPU_ENCODER
+
+
+def _escape_ass_path(name: str) -> str:
+    if not _ASS_SPECIAL.search(name):
+        return name
+    escaped = (name.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+               .replace("[", "\\[").replace("]", "\\]").replace(",", "\\,").replace(";", "\\;"))
+    return f"'{escaped}'"
 
 
 def blurred_source(width: int, height: int) -> str:
@@ -49,7 +61,7 @@ def rounded_foreground(width: int, height: int, radius: int) -> str:
 def video_filter(framing: Framing, subtitles: str | None, width: int = OUT_W,
                  height: int = OUT_H, background_mode: str = "blur",
                  frame_color: str = "0x00E5FF@0.95", *, output: str = "v") -> str:
-    subs = f",ass={subtitles}" if subtitles else ""
+    subs = f",ass={_escape_ass_path(subtitles)}" if subtitles else ""
     if framing.mode == "gameplay-split":
         if framing.webcam is None:
             raise ValueError("split gameplay requires a webcam crop")
@@ -61,6 +73,20 @@ def video_filter(framing: Framing, subtitles: str | None, width: int = OUT_W,
                 f"scale={width}:{top}:force_original_aspect_ratio=increase:force_divisible_by=2,"
                 f"crop={width}:{top},setsar=1[upper];"
                 f"[game]scale={width}:{bottom}:force_original_aspect_ratio=increase:force_divisible_by=2,"
+                f"crop={width}:{bottom},setsar=1[lower];"
+                f"[upper][lower]vstack{subs}[{output}]")
+    if framing.mode == "podcast-split":
+        if framing.boxes is None:
+            raise ValueError("podcast split requires two face boxes")
+        (x1, y1, w1, h1), (x2, y2, w2, h2) = framing.boxes
+        top = (height // 2) - ((height // 2) % 2)
+        bottom = height - top
+        return (f"[0:v]split[p1][p2];"
+                f"[p1]crop={w1}:{h1}:{x1}:{y1}:exact=1,"
+                f"scale={width}:{top}:force_original_aspect_ratio=increase:force_divisible_by=2,"
+                f"crop={width}:{top},setsar=1[upper];"
+                f"[p2]crop={w2}:{h2}:{x2}:{y2}:exact=1,"
+                f"scale={width}:{bottom}:force_original_aspect_ratio=increase:force_divisible_by=2,"
                 f"crop={width}:{bottom},setsar=1[lower];"
                 f"[upper][lower]vstack{subs}[{output}]")
     if framing.mode == "track":
@@ -100,7 +126,7 @@ def video_filter(framing: Framing, subtitles: str | None, width: int = OUT_W,
 
 def branded_filter(framing: Framing, subtitles: str | None, brand: Branding) -> str:
     w, h = brand.size
-    subs = f",ass={subtitles}" if subtitles else ""
+    subs = f",ass={_escape_ass_path(subtitles)}" if subtitles else ""
     if brand.mode == "horizontal":
         x, y, frame_w, frame_h = brand.horizontal_frame(framing.src_w / framing.src_h)
         radius = min(round(w * brand.border_radius), (frame_w - 1) // 2, (frame_h - 1) // 2)
@@ -140,6 +166,37 @@ def branded_filter(framing: Framing, subtitles: str | None, brand: Branding) -> 
     ) if part)
 
 
+def _audio_filter_args(duration: float, normalize_audio: bool) -> list[str]:
+    if not normalize_audio:
+        return []
+    filters = ["loudnorm=I=-14:TP=-1.5:LRA=11", "afade=t=in:st=0:d=0.04"]
+    if duration > 0.2:
+        filters.append(f"afade=t=out:st={max(0.0, duration - 0.04):.3f}:d=0.04")
+    return ["-af", ",".join(filters)]
+
+
+def _draw_safe_zones(image_path: Path) -> None:
+    import cv2
+    import numpy as np
+
+    img = cv2.imread(str(image_path))
+    if img is None:
+        return
+    h, w = img.shape[:2]
+    overlay = img.copy()
+    # Top UI bar (~10%), bottom caption/description bar (~20%), right social action bar (~15%)
+    top_h = round(h * 0.10)
+    bottom_y = round(h * 0.80)
+    right_x = round(w * 0.85)
+    cv2.rectangle(overlay, (0, 0), (w, top_h), (0, 0, 220), -1)
+    cv2.rectangle(overlay, (0, bottom_y), (w, h), (0, 0, 220), -1)
+    cv2.rectangle(overlay, (right_x, top_h), (w, bottom_y), (0, 140, 255), -1)
+    blended = cv2.addWeighted(overlay, 0.28, img, 0.72, 0)
+    cv2.rectangle(blended, (0, top_h), (right_x, bottom_y), (0, 255, 0), 2)
+    cv2.putText(blended, "SAFE ZONE", (18, top_h + 36), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2, cv2.LINE_AA)
+    cv2.imwrite(str(image_path), blended)
+
+
 def _render_args(video: Path, start: float, end: float, framing: Framing,
                  subtitles: Path | None, directory: Path, brand: Branding | None,
                  overlay: Path | None, width: int, height: int,
@@ -163,21 +220,26 @@ def render_clip(video: Path, start: float, end: float, framing: Framing,
                 subtitles: Path | None, output: Path, width: int = OUT_W, height: int = OUT_H,
                 background_mode: str = "blur", frame_color: str = "0x00E5FF@0.95", *,
                 brand: Branding | None = None,
-                overlay: Path | None = None) -> Path:
+                overlay: Path | None = None,
+                normalize_audio: bool = False) -> Path:
     output.parent.mkdir(parents=True, exist_ok=True)
     args = [
         *_render_args(video, start, end, framing, subtitles, output.parent, brand, overlay,
                      width, height, background_mode, frame_color),
         "-map", "0:a?",
+        *_audio_filter_args(end - start, normalize_audio),
     ]
     tail = ["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", output.name]
     encoder = preferred_encoder()
+    if encoder[0] in _FAILED_ENCODERS:
+        encoder = CPU_ENCODER
     print(f"[render] encoder {encoder[0]}", flush=True)
     try:
         ffmpeg.run([*args, "-c:v", *encoder, *tail], cwd=output.parent)
     except ffmpeg.FFmpegError:
         if encoder == CPU_ENCODER:
             raise
+        _FAILED_ENCODERS.add(encoder[0])
         print(f"[render] {encoder[0]} failed; retrying with {CPU_ENCODER[0]}", flush=True)
         ffmpeg.run([*args, "-c:v", *CPU_ENCODER, *tail], cwd=output.parent)
     return output
@@ -187,7 +249,7 @@ def render_preview(video: Path, start: float, end: float, framing: Framing,
                    subtitles: Path | None, output: Path, *, brand: Branding | None = None,
                    overlay: Path | None = None, at: float = 0,
                    width: int = OUT_W, height: int = OUT_H, background_mode: str = "blur",
-                   frame_color: str = "0x00E5FF@0.95") -> Path:
+                   frame_color: str = "0x00E5FF@0.95", safe_zone: bool = False) -> Path:
     """Render one frame at a clip-relative time, keeping tracking and ASS timestamps."""
     if not 0 <= at < end - start:
         raise ValueError("preview time must be within the clip")
@@ -196,4 +258,6 @@ def render_preview(video: Path, start: float, end: float, framing: Framing,
                      width, height, background_mode, frame_color)
     ffmpeg.run([*args, "-ss", f"{at:.3f}", "-frames:v", "1", "-update", "1", output.name],
                cwd=output.parent)
+    if safe_zone:
+        _draw_safe_zones(output)
     return output

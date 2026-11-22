@@ -39,9 +39,41 @@ def composite(canvas: np.ndarray, mask: np.ndarray, color: str, opacity: float =
     canvas[:, :, 3] = np.rint(alpha * 255).astype(np.uint8)
 
 
+def _letter_pillow(mask: np.ndarray, text: str, center: tuple[int, int], height: float,
+                   max_width: float, font_path: str) -> bool:
+    if not font_path:
+        return False
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        return False
+    try:
+        px = max(8, round(height * 1.15))
+        font = ImageFont.truetype(font_path, px)
+        bbox = font.getbbox(text)
+        width = max(1, bbox[2] - bbox[0])
+        if width > max_width:
+            px = max(8, round(px * (max_width / width)))
+            font = ImageFont.truetype(font_path, px)
+            bbox = font.getbbox(text)
+            width = max(1, bbox[2] - bbox[0])
+        glyph_h = max(1, bbox[3] - bbox[1])
+        img = Image.fromarray(mask)
+        draw = ImageDraw.Draw(img)
+        x = center[0] - width // 2 - bbox[0]
+        y = center[1] - glyph_h // 2 - bbox[1]
+        draw.text((x, y), text, fill=255, font=font)
+        mask[:, :] = np.asarray(img, dtype=np.uint8)
+        return True
+    except OSError:
+        return False
+
+
 def letter(mask: np.ndarray, text: str, center: tuple[int, int], height: float, face: int,
-           max_width: float, tracking: int = 0) -> None:
+           max_width: float, tracking: int = 0, ttf_path: str = "") -> None:
     if not text or height <= 0 or max_width <= 0:
+        return
+    if ttf_path and _letter_pillow(mask, text, center, height, max_width, ttf_path):
         return
     accents = {}
     plain = []
@@ -149,8 +181,9 @@ def draw_titles(canvas: np.ndarray, brand: Branding) -> None:
     composite(canvas, purple, brand.neon_color)
     purple.fill(0)
     letter(white, brand.logo_text, (x, y - round(title_size * 0.13)), title_size, face | cv2.FONT_ITALIC,
-           s * 0.42)
-    letter(white, brand.logo_label, (x, label_y), title_size * 0.23, face, pill_w * 1.75, round(s * 0.008))
+           s * 0.42, ttf_path=brand.logo_ttf)
+    letter(white, brand.logo_label, (x, label_y), title_size * 0.23, face, pill_w * 1.75, round(s * 0.008),
+           ttf_path=brand.logo_ttf)
     if brand.logo_icon:
         draw_play(canvas, brand, x - round(s * 0.253), y - round(s * 0.048), s * 0.085)
     if brand.footer_visible:
@@ -158,8 +191,10 @@ def draw_titles(canvas: np.ndarray, brand: Branding) -> None:
         size = s * brand.footer_size
         bar = round(w * brand.footer_width / 2)
         label_y = fy + round(size * 2.55)
-        letter(white, brand.footer_text, (w // 2, fy), size, face, w * 0.87, round(s * 0.006))
-        letter(white, brand.footer_label, (w // 2, label_y), size * 0.67, face, w * 0.72, round(s * 0.003))
+        letter(white, brand.footer_text, (w // 2, fy), size, face, w * 0.87, round(s * 0.006),
+               ttf_path=brand.logo_ttf)
+        letter(white, brand.footer_label, (w // 2, label_y), size * 0.67, face, w * 0.72, round(s * 0.003),
+               ttf_path=brand.logo_ttf)
         cv2.line(purple, (w // 2 - bar, fy + round(size * 1.38)), (w // 2 + bar, fy + round(size * 1.38)),
                  255, max(1, round(s * 0.004)), cv2.LINE_AA)
         for sign in (-1, 1):
@@ -209,7 +244,7 @@ def draw_headline(canvas: np.ndarray, brand: Branding, text: str, frame_top: int
     composite(canvas, outline, brand.border_color)
     for index, line in enumerate(lines):
         line_y = round(y + (index - (len(lines) - 1) / 2) * line_step)
-        letter(letters, line, (x, line_y), size, face, max_width)
+        letter(letters, line, (x, line_y), size, face, max_width, ttf_path=brand.logo_ttf)
     composite(canvas, letters, brand.logo_color)
 
 

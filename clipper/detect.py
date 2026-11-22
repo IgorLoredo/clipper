@@ -1,7 +1,9 @@
 import json
 import hashlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from pathlib import Path
+import threading
 
 from clipper.codex_exchange import CodexResponseRequired
 from clipper import gameplay_selection as gameplay
@@ -296,7 +298,8 @@ def detect(transcript: Transcript, peaks: list[Peak], llm: JsonLLM, max_clips: i
            window_seconds: float = 900.0,
            content_type: str = "podcast",
            campaign_context: str = "", gameplay_criteria: gameplay.GameplayCriteria | None = None,
-           gameplay_audio: list[AudioEvent] | None = None, query: str = "") -> list[Highlight]:
+           gameplay_audio: list[AudioEvent] | None = None, query: str = "", *,
+           concurrency: int = 1, compact_prompts: bool = False) -> list[Highlight]:
     criteria = (gameplay_criteria or gameplay.GameplayCriteria()) if content_type == "gameplay" else None
     focused_gameplay = bool(criteria and query)
     size = min(window_seconds, 120) if focused_gameplay else window_seconds
@@ -340,6 +343,7 @@ def detect(transcript: Transcript, peaks: list[Peak], llm: JsonLLM, max_clips: i
     pending = []
     batches = {}
     report = {}
+    work_items: list[tuple[int, str, str]] = []
     for index, (start, end) in enumerate(spans, 1):
         if preference and preference.mode == "only" and not any(
                 t.speaker.casefold() == preference.speaker.casefold() and t.start < end and t.end > start
@@ -373,31 +377,66 @@ def detect(transcript: Transcript, peaks: list[Peak], llm: JsonLLM, max_clips: i
         if key in done:
             print(f"[detect] chunk {index}/{len(spans)} already done by {done[key].get('llm') or '?'}", flush=True)
             continue
-        print(f"[detect] chunk {index}/{len(spans)} ({start:.0f}s-{end:.0f}s)", flush=True)
         if criteria:
-            user = gameplay.format_batch(batch, units, preference, min_dur, max_dur)
+            user = gameplay.format_batch(batch, units, preference, min_dur, max_dur, compact=compact_prompts)
         else:
             user = "\n\n".join(part for part in (
                 format_hints(peaks, start, end), "Transcript:\n" + format_lines(words, preference=preference)) if part)
         already_used = [(a, b) for a, b in excluded if a < end and b > start]
         if focused_gameplay:
             user = json.dumps({"scene_query": query, **json.loads(user), "already_used": already_used},
-                              ensure_ascii=False)
+                              ensure_ascii=False, **({"separators": (",", ":")} if compact_prompts else {}))
         elif query:
             user = "Scene to find: " + json.dumps(query, ensure_ascii=False) + "\n\n" + user
         if already_used and not focused_gameplay:
             user += ("\n\nThese intervals already became clips. Choose DIFFERENT moments and avoid overlap: "
                      + json.dumps(already_used))
-        try:
-            done[key] = _ask_window(llm, system, user, index, gameplay_batch=bool(criteria))
-        except CodexResponseRequired as exc:
-            pending.extend(exc.requests)
-            continue
-        except ProvidersExhausted as exc:
-            raise ProvidersExhausted(
-                f"all LLMs failed at chunk {index}/{len(spans)}; progress kept in {progress}, "
-                f"run the same command again to resume. Errors: {exc}") from exc
-        _save_progress(progress, params, done)
+        work_items.append((index, key, user))
+
+    effective_workers = max(1, int(concurrency))
+    if getattr(llm, "label", "").startswith(("codex:", "ollama:")):
+        effective_workers = 1
+
+    if effective_workers > 1 and len(work_items) > 1:
+        progress_lock = threading.Lock()
+
+        def _run_chunk(item: tuple[int, str, str]) -> tuple[int, str, dict]:
+            idx, key_id, payload_user = item
+            s, e = spans[idx - 1]
+            print(f"[detect] chunk {idx}/{len(spans)} ({s:.0f}s-{e:.0f}s)", flush=True)
+            result = _ask_window(llm, system, payload_user, idx, gameplay_batch=bool(criteria))
+            return idx, key_id, result
+
+        with ThreadPoolExecutor(max_workers=effective_workers) as pool_exec:
+            futures = {pool_exec.submit(_run_chunk, item): item for item in work_items}
+            for fut in as_completed(futures):
+                idx, key_id, _ = futures[fut]
+                try:
+                    _, _, res = fut.result()
+                except CodexResponseRequired as exc:
+                    pending.extend(exc.requests)
+                    continue
+                except ProvidersExhausted as exc:
+                    raise ProvidersExhausted(
+                        f"all LLMs failed at chunk {idx}/{len(spans)}; progress kept in {progress}, "
+                        f"run the same command again to resume. Errors: {exc}") from exc
+                with progress_lock:
+                    done[key_id] = res
+                    _save_progress(progress, params, done)
+    else:
+        for index, key, user in work_items:
+            start, end = spans[index - 1]
+            print(f"[detect] chunk {index}/{len(spans)} ({start:.0f}s-{end:.0f}s)", flush=True)
+            try:
+                done[key] = _ask_window(llm, system, user, index, gameplay_batch=bool(criteria))
+            except CodexResponseRequired as exc:
+                pending.extend(exc.requests)
+                continue
+            except ProvidersExhausted as exc:
+                raise ProvidersExhausted(
+                    f"all LLMs failed at chunk {index}/{len(spans)}; progress kept in {progress}, "
+                    f"run the same command again to resume. Errors: {exc}") from exc
+            _save_progress(progress, params, done)
     if pending:
         raise CodexResponseRequired(list(dict.fromkeys(pending)), "selection")
     if keys:

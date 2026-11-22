@@ -172,13 +172,22 @@ def group_words(words: list[Word], max_words: int, max_gap: float) -> list[list[
     return groups
 
 
+def dynamic_opening_duration(opening: str) -> float:
+    words = len(opening.split())
+    return round(min(4.8, max(2.4, words * 0.42)), 2)
+
+
 def build_ass(words: list[Word], clip_start: float, clip_end: float,
               style: CaptionStyle = CaptionStyle(), width: int = 1080, height: int = 1920,
               margin_x: int = 60,
               template: CaptionTemplate | None = None, title: str = "", credit: str = "",
-              include_captions: bool = True, opening: str = "") -> str:
+              include_captions: bool = True, opening: str = "", *,
+              opening_duration: float | None = None,
+              keep_captions_during_opening: bool = False) -> str:
     template = template or CaptionTemplate(width=width, height=height, caption=style)
     style, width, height = template.caption, template.width, template.height
+    title_border = 3 if template.title_box else 1
+    credit_border = 3 if template.credit_box else 1
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -189,9 +198,9 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Main,{style.font},{style.size},{style.primary},{style.primary},{style.outline},&H80000000,-1,0,0,0,100,100,0,0,1,{style.outline_width},{style.shadow},2,{margin_x},{margin_x},{style.margin_v},1
-Style: TemplateTitle,{style.font},{template.title_size},{template.title_color},{template.title_color},{style.outline},{'&H80000000' if template.title_box else '&HFF000000'},-1,0,0,0,100,100,0,0,1,3,1,8,60,60,{template.title_margin_v},1
+Style: TemplateTitle,{style.font},{template.title_size},{template.title_color},{template.title_color},{style.outline},{'&H80000000' if template.title_box else '&HFF000000'},-1,0,0,0,100,100,0,0,{title_border},3,1,8,60,60,{template.title_margin_v},1
 Style: TemplateBrand,{style.font},34,&H00E5FF&,&H00E5FF&,&H00000000,&HFF000000,-1,0,0,0,100,100,0,0,1,2,1,8,60,60,85,1
-Style: TemplateCredit,Arial,{template.credit_size},{template.credit_color},{template.credit_color},{style.outline},{'&H80000000' if template.credit_box else '&HFF000000'},0,0,0,0,100,100,0,0,1,2,1,2,60,60,{template.credit_margin_v},1
+Style: TemplateCredit,Arial,{template.credit_size},{template.credit_color},{template.credit_color},{style.outline},{'&H80000000' if template.credit_box else '&HFF000000'},0,0,0,0,100,100,0,0,{credit_border},2,1,2,60,60,{template.credit_margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -199,7 +208,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     inside = [w for w in words if w.end > clip_start and w.start < clip_end]
     clip_len = clip_end - clip_start
     lines = []
-    opening_end = min(clip_len, 5.2) if opening.strip() else 0.0
+    target_opening = 5.2 if opening_duration is None else max(0.5, float(opening_duration))
+    opening_end = min(clip_len, target_opening) if opening.strip() else 0.0
     if opening_end > 0:
         size = round(style.size * 1.25)
         margin = max(1, style.margin_v - round(height * 52 / 1920))
@@ -214,12 +224,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         lines.append(f"Dialogue: 0,0:00:00.00,{ass_time(clip_len)},TemplateCredit,,0,0,0,,{ass_text(credit_text)}")
     if not include_captions:
         return header + "\n".join(lines) + "\n"
+    caption_floor = 0.0 if keep_captions_during_opening else opening_end
     for group in group_words(inside, style.max_words, style.max_gap):
         for index, word in enumerate(group):
             start = word.start - clip_start
             end = group[index + 1].start - clip_start if index + 1 < len(group) else word.end - clip_start
             start, end = max(0.0, start), min(clip_len, max(end, start + 0.05))
-            start = max(start, opening_end)
+            start = max(start, caption_floor)
             if end <= start:
                 continue
             text = " ".join(

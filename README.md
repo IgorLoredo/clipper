@@ -262,7 +262,7 @@ python -m clipper gameplay "video.mp4" --llm gemini:gemini-3.6-flash --visual-re
 ```
 
 O provedor escolhido em `--llm` faz a seleção inicial. Depois, o revisor visual
-independente envia ao Codex uma grade de seis quadros por trecho, incluindo o
+independente envia ao Codex uma grade de oito quadros (2×4) por trecho, incluindo o
 pico local mais forte. A shortlist tem até 12 candidatos da transcrição e pode
 receber trechos adicionais sugeridos por picos de áudio, movimento ou mudança
 de cena. A revisão procura um gancho visual, ação compreensível e um desfecho,
@@ -448,6 +448,17 @@ correspondem à descrição. Com revisão visual, alguns candidatos abaixo da no
 editorial são reavaliados com quadros, falas e pistas acústicas com timestamps.
 A abertura recebe atenção nos primeiros cinco segundos. Essa avaliação usa o
 vídeo de origem e serve como critério editorial.
+
+### Recursos opcionais de produtividade, economia de tokens e polimento
+
+- **Monitoramento de tokens (`clipper usage`)**: toda chamada de API (Gemini, OpenAI, Anthropic, DeepSeek, OpenRouter e Ollama) registra tokens de entrada, saída e cache em `out/<video>/usage.json` e `out/_usage.jsonl`. Rode `clipper usage --days 7` para ver o acumulado diário e recente.
+- **Prompts compactos (`--compact-prompts`)**: remove campos redundantes nos payloads de seleção e revisão visual para economizar tokens.
+- **Seleção rápida com legendas `json3` do YouTube (`--transcript-source auto|youtube`)**: importa legendas `.json3` (já com timestamps por palavra) para selecionar cortes em segundos em lives longas; combine com `--refine-captions` para rodar o Whisper apenas nos trechos selecionados.
+- **Revisão visual via API multimodal (`--allow-api-visual-review`)**: libera `--visual-review-llm gemini:...` / `openai:...` / `anthropic:...` além do Codex. Use `--visual-refine-all` para também refinar título, motivo e nota combinada dos candidatos ranqueados.
+- **Paralelismo entre janelas (`--llm-concurrency N`)**: executa janelas de API em paralelo com checkpoint seguro.
+- **Polimento de renderização**: `--normalize-audio` (loudnorm -14 LUFS + micro-fades), `--preview-safe-zone` (guias de UI TikTok/Reels/Shorts no PNG de prévia), `--dynamic-opening` (duração proporcional ao tamanho do hook), `--keep-opening-captions` (mantém legenda falada durante a chamada), `--active-speaker` e `--podcast-split` (2 pessoas em podcast).
+- **Curadoria visual local (`clipper review out/<video>`)**: abre uma interface web local para assistir os trechos no vídeo original, ajustar tempos/títulos/hooks e desenhar o `webcam.json` arrastando sobre o quadro.
+- **Pasta de saída fora do OneDrive (`CLIPPER_OUT`)**: defina `CLIPPER_OUT=C:\clipper-out` no `.env` para evitar sincronizar arquivos de vídeo grandes na nuvem.
 
 ## Como funciona
 

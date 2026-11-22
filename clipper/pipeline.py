@@ -6,14 +6,14 @@ from pathlib import Path
 from clipper import detect as detect_mod
 from clipper import attention, campaign, gameplay_audio, llm, reframe, signals
 from clipper.branding import Branding
-from clipper.captions import CaptionStyle, build_ass, load_template
+from clipper.captions import CaptionStyle, build_ass, dynamic_opening_duration, load_template
 from clipper.codex_exchange import CodexExchange
 from clipper.config import Settings
 from clipper.detect import Highlight
 from clipper.gameplay_selection import GameplayCriteria
 from clipper.ingest import Source, fetch, slugify
 from clipper.render import OUT_H, SPLIT_WEBCAM_HEIGHT, render_clip, render_preview
-from clipper.transcribe import Transcript, transcribe
+from clipper.transcribe import Transcript, transcribe, transcribe_range
 from clipper.speakers import load_preference
 
 
@@ -48,6 +48,18 @@ class Options:
     template_file: Path | None = None
     credit: str = ""
     query: str = ""
+    transcript_source: str = "whisper"
+    refine_captions: bool = False
+    llm_concurrency: int = 1
+    compact_prompts: bool = False
+    allow_api_visual_review: bool = False
+    visual_refine_all: bool = False
+    normalize_audio: bool = False
+    preview_safe_zone: bool = False
+    dynamic_opening: bool = False
+    keep_opening_captions: bool = False
+    active_speaker: bool = False
+    podcast_split: bool = False
 
 
 def existing_ranges(workdir: Path) -> tuple[tuple[float, float], ...]:
@@ -77,6 +89,12 @@ def next_variant(workdir: Path, variant: str) -> str:
     return candidate
 
 
+def _save_chain_usage(chain: object, workdir: Path, out_root: Path) -> None:
+    tracker = getattr(chain, "usage", None)
+    if tracker is not None and hasattr(tracker, "save"):
+        tracker.save(workdir, out_root)
+
+
 def run(source: str, out_root: Path, settings: Settings, options: Options, chat: str | None = None) -> Path:
     brief = campaign.load(options.campaign_file) if options.campaign_file else None
     if options.prefer_speaker:
@@ -84,13 +102,20 @@ def run(source: str, out_root: Path, settings: Settings, options: Options, chat:
             raise ValueError("speaker preference requires a speaker timeline; Whisper does not identify speakers")
         load_preference(options.speaker_turns, options.prefer_speaker, mode=options.speaker_mode,
                         weight=options.speaker_weight)
-    src = fetch(source, out_root, chat)
+    if options.transcript_source != "whisper":
+        src = fetch(source, out_root, chat, fetch_subtitles=True, language=options.language)
+    else:
+        src = fetch(source, out_root, chat)
     settings = replace(settings, codex_directory=src.workdir / "codex-llm")
     print(f"[run] workdir {src.workdir}", flush=True)
     content_type = reframe.resolve_content_type(src.title, options.content_type)
     transcript_cache = src.workdir / "transcript.json"
     try:
-        transcript = transcribe(src.video, transcript_cache, settings, options.language)
+        if options.transcript_source != "whisper":
+            transcript = transcribe(src.video, transcript_cache, settings, options.language,
+                                    source_mode=options.transcript_source, json3_path=src.subtitles)
+        else:
+            transcript = transcribe(src.video, transcript_cache, settings, options.language)
     except (IndexError, ValueError):
         if content_type != "gameplay" or transcript_cache.is_file():
             raise
@@ -110,9 +135,16 @@ def run(source: str, out_root: Path, settings: Settings, options: Options, chat:
         preference = load_preference(options.speaker_turns, options.prefer_speaker, transcript.duration,
                                      options.speaker_mode, options.speaker_weight)
     audio_events = None
+    precomputed_levels = None
     if content_type == "gameplay":
-        audio_events = gameplay_audio.collect(src.video, transcript, src.workdir / "gameplay_audio_events.json")
-    peaks = signals.collect(src.video, transcript.duration, src.chat, src.workdir / "signals.json")
+        audio_events, precomputed_levels = gameplay_audio.collect_with_levels(
+            src.video, transcript, src.workdir / "gameplay_audio_events.json"
+        )
+    if precomputed_levels is not None:
+        peaks = signals.collect(src.video, transcript.duration, src.chat, src.workdir / "signals.json",
+                                precomputed_levels=precomputed_levels)
+    else:
+        peaks = signals.collect(src.video, transcript.duration, src.chat, src.workdir / "signals.json")
     context = attention.load(transcript.duration, peaks, src.chat, src.engagement or src.workdir / "engagement.json")
     peaks = [p for p in peaks if p.kind != "chat"] + context.chat_peaks() + context.replay_peaks()
     peaks.sort(key=lambda p: p.time)
@@ -132,34 +164,59 @@ def run(source: str, out_root: Path, settings: Settings, options: Options, chat:
     shortlist_size = min(12, options.max_clips + 4) if visual_review else options.max_clips
     if visual_review:
         cache = cache.with_suffix(".shortlist.json")
-    highlights = detect_mod.detect(
-        transcript, peaks, llm.build(settings), shortlist_size,
-        options.min_dur, options.max_dur, cache, excluded=excluded, preference=preference,
-        window_seconds=options.llm_window_seconds, content_type=content_type,
-        campaign_context=brief.summary() if brief else "",
-        query=options.query,
-        **({"gameplay_criteria": options.gameplay_criteria, "gameplay_audio": audio_events}
-           if content_type == "gameplay" else {}),
-    )
+    selection_chain = llm.build(settings)
+    try:
+        detect_kwargs = {}
+        if content_type == "gameplay":
+            detect_kwargs.update(gameplay_criteria=options.gameplay_criteria, gameplay_audio=audio_events)
+        if options.llm_concurrency > 1:
+            detect_kwargs["concurrency"] = options.llm_concurrency
+        if options.compact_prompts:
+            detect_kwargs["compact_prompts"] = True
+        highlights = detect_mod.detect(
+            transcript, peaks, selection_chain, shortlist_size,
+            options.min_dur, options.max_dur, cache, excluded=excluded, preference=preference,
+            window_seconds=options.llm_window_seconds, content_type=content_type,
+            campaign_context=brief.summary() if brief else "",
+            query=options.query,
+            **detect_kwargs,
+        )
+    finally:
+        _save_chain_usage(selection_chain, src.workdir, out_root)
     if visual_review:
         from clipper.gameplay import review
 
         visual_settings = settings.with_llm(options.visual_review_llm)
-        if visual_settings.llm_provider != "codex" or visual_settings.llm_fallbacks:
-            raise ValueError("visual review currently requires --visual-review-llm codex[:model]")
+        if not options.allow_api_visual_review and (
+            visual_settings.llm_provider != "codex" or visual_settings.llm_fallbacks
+        ):
+            raise ValueError("visual review currently requires --visual-review-llm codex[:model] "
+                             "(or pass --allow-api-visual-review to use multimodal APIs)")
         selection_report = cache.with_suffix(".candidates.json")
         diagnostics = (json.loads(selection_report.read_text(encoding="utf-8"))["candidates"]
                        if selection_report.is_file() else [])
-        highlights = review(src.video, transcript, highlights, peaks, excluded,
-                            options.min_dur, options.max_dur, options.max_clips,
-                            CodexExchange(settings.codex_directory, visual_settings.model_for("codex")),
-                            speaker_weight=preference.weight if preference else None,
-                            campaign_context=brief.summary() if brief else "",
-                            query=options.query,
-                            editorial=diagnostics, audio_events=audio_events or [],
-                            criteria=options.gameplay_criteria or GameplayCriteria(),
-                            report_path=cache.with_suffix(".visual.candidates.json"))
-        run_id += f"-visual-{slugify(visual_settings.model_for('codex'), 30)}"
+        if visual_settings.llm_provider == "codex" and not visual_settings.llm_fallbacks:
+            visual_exchange = CodexExchange(settings.codex_directory, visual_settings.model_for("codex"))
+            visual_tag = slugify(visual_settings.model_for("codex"), 30)
+        else:
+            visual_exchange = llm.build(visual_settings)
+            visual_tag = slugify(f"{visual_settings.llm_provider}-{visual_settings.model_for(visual_settings.llm_provider)}", 30)
+        try:
+            highlights = review(src.video, transcript, highlights, peaks, excluded,
+                                options.min_dur, options.max_dur, options.max_clips,
+                                visual_exchange,
+                                speaker_weight=preference.weight if preference else None,
+                                campaign_context=brief.summary() if brief else "",
+                                query=options.query,
+                                editorial=diagnostics, audio_events=audio_events or [],
+                                criteria=options.gameplay_criteria or GameplayCriteria(),
+                                report_path=cache.with_suffix(".visual.candidates.json"),
+                                frames_dir=settings.codex_directory,
+                                refine_metadata=options.visual_refine_all,
+                                compact_prompts=options.compact_prompts)
+        finally:
+            _save_chain_usage(visual_exchange, src.workdir, out_root)
+        run_id += f"-visual-{visual_tag}"
         cache = src.workdir / f"highlights.{run_id}.json"
         cache.write_text(json.dumps([asdict(clip) for clip in highlights], ensure_ascii=False, indent=2),
                          encoding="utf-8")
@@ -169,7 +226,11 @@ def run(source: str, out_root: Path, settings: Settings, options: Options, chat:
         if any(provider == "codex" for provider, _ in reviewer_settings.llm_chain):
             reviewer_id = hashlib.sha256(repr(reviewer_settings.llm_chain).encode()).hexdigest()[:10]
             review_key = review_key.removesuffix(".json") + f"-{reviewer_id}.json"
-        reviews = campaign.review(brief, highlights, transcript, llm.build(reviewer_settings), src.workdir / review_key)
+        review_chain = llm.build(reviewer_settings)
+        try:
+            reviews = campaign.review(brief, highlights, transcript, review_chain, src.workdir / review_key)
+        finally:
+            _save_chain_usage(review_chain, src.workdir, out_root)
         for highlight, assessment in zip(highlights, reviews):
             highlight.campaign_review = assessment
         approved = sum(bool(review["approved"]) for review in reviews)
@@ -254,16 +315,29 @@ def render_all(src: Source, transcript: Transcript, highlights: list[Highlight],
     ordered = ordered[:1 if options.preview_only else options.render_limit]
     manifest = []
     template = load_template(options.template_file)
+    webcam_cache = src.workdir / "webcam.json"
+    whisper_model = None
+    if options.refine_captions and options.captions and ordered:
+        from faster_whisper import WhisperModel
+        from clipper.transcribe import _pick_device
+
+        device, compute_type, model_name = _pick_device(settings)
+        print(f"[captions] loading whisper={model_name} ({device}) for clip caption refinement", flush=True)
+        whisper_model = WhisperModel(model_name, device=device, compute_type=compute_type)
     for rank, h in enumerate(ordered, 1):
         stem = f"{rank:02d}_{h.score:03d}_{slugify(h.title, 40)}"
         print(f"[render] {stem} ({h.start:.1f}s-{h.end:.1f}s)", flush=True)
         # Keep the established podcast call shape intact; gameplay opts into the new full-screen plan.
         if gameplay_split:
-            framing = reframe.plan_gameplay_split(src.video, h.start, settings.face_model, options.webcam_crop)
+            framing = reframe.plan_gameplay_split(src.video, h.start, settings.face_model, options.webcam_crop,
+                                                  end=h.end, cache_path=webcam_cache)
         elif content_type == "gameplay" or (brand and brand.mode == "horizontal"):
             framing = reframe.plan(src.video, h.start, h.end, settings.face_model, content_type="gameplay")
         elif content_type in {"anime", "mass"}:
             framing = reframe.plan(src.video, h.start, h.end, settings.face_model, content_type=content_type)
+        elif options.active_speaker or options.podcast_split:
+            framing = reframe.plan(src.video, h.start, h.end, settings.face_model,
+                                   active_speaker=options.active_speaker, podcast_split=options.podcast_split)
         else:
             framing = reframe.plan(src.video, h.start, h.end, settings.face_model)
         aspect = framing.src_w / framing.src_h if framing.src_w > 0 and framing.src_h > 0 else 16 / 9
@@ -277,14 +351,24 @@ def render_all(src: Source, transcript: Transcript, highlights: list[Highlight],
                         or (template.credit_enabled and bool(options.credit.strip() or template.credit.strip())))
         if options.captions or overlay_text or opening:
             subs = clips_dir / f"{stem}.ass"
+            clip_words = (
+                transcribe_range(src.video, h.start, h.end, settings, options.language or transcript.language,
+                                 model=whisper_model)
+                if options.refine_captions and options.captions else transcript.words
+            )
+            ass_extra = {}
+            if options.dynamic_opening and opening:
+                ass_extra["opening_duration"] = dynamic_opening_duration(opening)
+            if options.keep_opening_captions:
+                ass_extra["keep_captions_during_opening"] = True
             if options.template_file:
-                captions = build_ass(transcript.words, h.start, h.end, template=template,
+                captions = build_ass(clip_words, h.start, h.end, template=template,
                                      title=h.title, credit=options.credit, include_captions=options.captions,
-                                     opening=opening)
+                                     opening=opening, **ass_extra)
             elif gameplay_split:
                 style = CaptionStyle(size=70, outline_width=5, margin_v=OUT_H - SPLIT_WEBCAM_HEIGHT - 26)
-                captions = build_ass(transcript.words, h.start, h.end, style,
-                                     include_captions=options.captions, opening=opening)
+                captions = build_ass(clip_words, h.start, h.end, style,
+                                     include_captions=options.captions, opening=opening, **ass_extra)
             elif brand:
                 w, height = brand.size
                 bottom, side = brand.caption_margins(aspect)
@@ -292,9 +376,9 @@ def render_all(src: Source, transcript: Transcript, highlights: list[Highlight],
                 style = replace(style, size=max(1, round(style.size * w / 1080)),
                                 outline_width=max(1, round(style.outline_width * w / 1080)),
                                 shadow=round(style.shadow * w / 1080), margin_v=round(height * bottom))
-                captions = build_ass(transcript.words, h.start, h.end, style, w, height, round(w * side))
+                captions = build_ass(clip_words, h.start, h.end, style, w, height, round(w * side), **ass_extra)
             else:
-                captions = build_ass(transcript.words, h.start, h.end)
+                captions = build_ass(clip_words, h.start, h.end, **ass_extra)
             subs.write_text(captions, encoding="utf-8")
         branding = {"brand": brand, "overlay": overlay} if brand else {}
         if options.template_file:
@@ -302,17 +386,24 @@ def render_all(src: Source, transcript: Transcript, highlights: list[Highlight],
                             background_mode=template.background_mode, frame_color=template.frame_color)
         if options.preview_only or options.preview_at is not None:
             at = options.preview_at if options.preview_at is not None else min(1, (h.end - h.start) / 2)
+            preview_kwargs = {**branding}
+            if options.preview_safe_zone:
+                preview_kwargs["safe_zone"] = True
             preview = render_preview(src.video, h.start, h.end, framing, subs,
-                                     clips_dir / f"{stem}.preview.png", at=at, **branding)
+                                     clips_dir / f"{stem}.preview.png", at=at, **preview_kwargs)
             print(f"[preview] {preview}", flush=True)
         if options.preview_only:
             break
         output_path = clips_dir / f"{stem}.mp4"
+        render_kwargs = {**branding}
+        if options.normalize_audio:
+            render_kwargs["normalize_audio"] = True
         if options.template_file:
             output = render_clip(src.video, h.start, h.end, framing, subs, output_path,
-                                 template.width, template.height, template.background_mode, template.frame_color)
+                                 template.width, template.height, template.background_mode, template.frame_color,
+                                 **({"normalize_audio": True} if options.normalize_audio else {}))
         else:
-            output = render_clip(src.video, h.start, h.end, framing, subs, output_path, **branding)
+            output = render_clip(src.video, h.start, h.end, framing, subs, output_path, **render_kwargs)
         publication = output.with_suffix(".txt")
         publication.write_text(publication_text(h, src.title, content_type, transcript.language), encoding="utf-8")
         manifest.append({**asdict(h), "file": output.name, "framing": framing.mode,

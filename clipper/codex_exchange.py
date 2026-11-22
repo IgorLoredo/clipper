@@ -19,6 +19,9 @@ def _stage(schema: dict) -> str:
     if "clips" in properties:
         return "visual_review"
     if "reviews" in properties:
+        item_props = properties["reviews"].get("items", {}).get("properties", {})
+        if "accepted" in item_props and "payoff" in item_props:
+            return "selection"
         return "campaign_review"
     return "selection"
 

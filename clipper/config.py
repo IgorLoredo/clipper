@@ -46,6 +46,7 @@ class Settings:
     whisper_model: str = ""
     whisper_device: str = ""
     face_model: str = ""
+    out_dir: str = ""
     codex_directory: Path = Path(".clipper-codex")
 
     @classmethod
@@ -60,6 +61,7 @@ class Settings:
             whisper_model=env("WHISPER_MODEL", ""),
             whisper_device=env("WHISPER_DEVICE", ""),
             face_model=env("FACE_MODEL", ""),
+            out_dir=env("CLIPPER_OUT", ""),
         )
         return settings.with_llm(env("LLM_PROVIDER", "anthropic"))
 

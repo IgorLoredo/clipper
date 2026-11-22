@@ -15,6 +15,7 @@ class Branding:
     logo_text: str = "Vira"
     logo_label: str = "CORTES"
     logo_font: str = "duplex"
+    logo_ttf: str = ""
     logo_color: str = "#FAF7FF"
     logo_size: float = 0.075
     logo_x: float = 0.5

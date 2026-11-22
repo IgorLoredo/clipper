@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import subprocess
 from dataclasses import asdict, replace
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -11,8 +12,10 @@ import numpy as np
 
 from clipper.codex_exchange import CodexExchange
 from clipper.detect import QUERY_GUIDANCE, Highlight, dedupe, format_lines, overlap_ratio
+from clipper.ffmpeg import ffmpeg_exe
 from clipper.gameplay_audio import AudioEvent
-from clipper.gameplay_selection import GameplayCriteria, HOOK_GUIDANCE
+from clipper.gameplay_selection import GameplayCriteria, HOOK_GUIDANCE, _compact_acoustic
+from clipper.llm import JsonLLM
 from clipper.signals import Peak, find_peaks
 from clipper.transcribe import Transcript
 
@@ -126,6 +129,45 @@ def _visual_peaks(capture, duration: float) -> list[Peak]:
     return find_peaks(np.asarray(scores), step, "visual", threshold=2.0, min_gap=18.0, limit=8)
 
 
+def _visual_peaks_ffmpeg(video: Path, duration: float) -> list[Peak] | None:
+    """Sequential FFmpeg pipe to avoid slow random seeks on multi-gigabyte VODs."""
+    step = max(1.0, duration / 1200.0)
+    fps = 1.0 / step
+    frame_bytes = 160 * 90 * 3
+    cmd = [
+        ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-i", str(video),
+        "-vf", f"fps={fps:.6f},scale=160:90", "-f", "rawvideo", "-pix_fmt", "bgr24", "-",
+    ]
+    scores: list[float] = []
+    previous_gray, previous_hist = None, None
+    try:
+        with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as proc:
+            assert proc.stdout is not None
+            while len(scores) < 1250:
+                chunk = proc.stdout.read(frame_bytes)
+                if len(chunk) < frame_bytes:
+                    break
+                small = np.frombuffer(chunk, dtype=np.uint8).reshape((90, 160, 3))
+                gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+                hist = cv2.calcHist([small], [0, 1], None, [16, 16], [0, 256, 0, 256])
+                cv2.normalize(hist, hist)
+                if previous_gray is None:
+                    score = 0.0
+                else:
+                    motion = float(np.mean(cv2.absdiff(gray, previous_gray))) / 255.0
+                    scene = float(cv2.compareHist(previous_hist, hist, cv2.HISTCMP_BHATTACHARYYA))
+                    score = motion + 0.65 * scene
+                scores.append(score)
+                previous_gray, previous_hist = gray, hist
+            if proc.wait() != 0 and len(scores) < 3:
+                return None
+    except OSError:
+        return None
+    if len(scores) < 3:
+        return None
+    return find_peaks(np.asarray(scores), step, "visual", threshold=2.0, min_gap=18.0, limit=8)
+
+
 def _cached_visual_peaks(capture, duration: float, video: Path, cache: Path) -> list[Peak]:
     stat = video.stat()
     key = [1, str(video.resolve()), stat.st_size, stat.st_mtime_ns, duration]
@@ -136,7 +178,9 @@ def _cached_visual_peaks(capture, duration: float, video: Path, cache: Path) -> 
                 return [Peak(**peak) for peak in data["peaks"]]
         except (OSError, ValueError, KeyError, TypeError):
             pass
-    result = _visual_peaks(capture, duration)
+    result = _visual_peaks_ffmpeg(video, duration) if duration >= 120 else None
+    if result is None:
+        result = _visual_peaks(capture, duration)
     with NamedTemporaryFile(mode="w", encoding="utf-8", dir=cache.parent, delete=False) as file:
         temporary = Path(file.name)
         json.dump({"key": key, "peaks": [asdict(peak) for peak in result]}, file)
@@ -166,10 +210,12 @@ def _peak_clips(peaks: list[Peak], duration: float, min_dur: float, max_dur: flo
 
 def review(video: Path, transcript: Transcript, highlights: list[Highlight], peaks: list[Peak],
            excluded: tuple[tuple[float, float], ...], minimum: float, maximum: float, limit: int,
-           exchange: CodexExchange, *, speaker_weight: float | None,
+           exchange: CodexExchange | JsonLLM, *, speaker_weight: float | None,
            campaign_context: str = "", editorial: list[dict] | None = None,
            audio_events: list[AudioEvent] | None = None, criteria: GameplayCriteria | None = None,
-           report_path: Path | None = None, query: str = "") -> list[Highlight]:
+           report_path: Path | None = None, query: str = "",
+           frames_dir: Path | None = None, refine_metadata: bool = False,
+           compact_prompts: bool = False) -> list[Highlight]:
     capture = cv2.VideoCapture(str(video))
     try:
         fps = capture.get(cv2.CAP_PROP_FPS)
@@ -178,7 +224,8 @@ def review(video: Path, transcript: Transcript, highlights: list[Highlight], pea
             print("[gameplay] video frames unavailable; using transcript selection", flush=True)
             return highlights[:limit]
         duration = frames / fps
-        folder = exchange.directory / "frames"
+        base_dir = frames_dir or getattr(exchange, "directory", video.parent / "codex-llm")
+        folder = Path(base_dir) / "frames"
         folder.mkdir(parents=True, exist_ok=True)
         review_peaks = peaks + _cached_visual_peaks(capture, duration, video, folder / "visual_peaks.json")
         evidence = {tuple(entry["clip_bounds"]): entry for entry in editorial or [] if "clip_bounds" in entry}
@@ -213,19 +260,25 @@ def review(video: Path, transcript: Transcript, highlights: list[Highlight], pea
             clip_peaks = [peak for peak in review_peaks if clip.start <= peak.time <= clip.end]
             acoustic = sorted((event for event in audio_events or [] if clip.start <= event.peak_time < clip.end),
                               key=lambda event: event.strength, reverse=True)[:6]
-            details.append({"index": index, "start": clip.start, "end": clip.end, "title": clip.title,
-                            "hook": clip.hook,
-                            "reaction_time": reaction, "frame_times": times,
-                            "opening_end": min(clip.start + 5, clip.end),
-                            "opening_transcript": format_lines(
-                                transcript.words_between(clip.start, min(clip.start + 5, clip.end))),
-                            "timed_transcript": format_lines(
-                                transcript.words_between(clip.start, clip.end))[:2000],
-                            "acoustic_events": [asdict(event) for event in acoustic],
-                            "has_frames": bool(digest), "transcript": " ".join(
-                                word.text for word in transcript.words_between(clip.start, clip.end))[:1000],
-                            "signals": [{"time": peak.time, "kind": peak.kind,
-                                         "strength": peak.strength} for peak in clip_peaks]})
+            timed_tx = format_lines(transcript.words_between(clip.start, clip.end))[:2000]
+            detail = {
+                "index": index, "start": clip.start, "end": clip.end, "title": clip.title,
+                "hook": clip.hook,
+                "reaction_time": reaction, "frame_times": times,
+                "opening_end": min(clip.start + 5, clip.end),
+                "opening_transcript": format_lines(
+                    transcript.words_between(clip.start, min(clip.start + 5, clip.end))),
+                "timed_transcript": timed_tx,
+                "acoustic_events": (_compact_acoustic([asdict(event) for event in acoustic])
+                                    if compact_prompts else [asdict(event) for event in acoustic]),
+                "has_frames": bool(digest),
+                "signals": [{"time": peak.time, "kind": peak.kind,
+                             "strength": peak.strength} for peak in clip_peaks],
+            }
+            if not compact_prompts or not timed_tx:
+                detail["transcript"] = " ".join(
+                    word.text for word in transcript.words_between(clip.start, clip.end))[:1000]
+            details.append(detail)
     finally:
         capture.release()
     def save_report(status, verdicts=None, selected_ids=()):
@@ -250,9 +303,11 @@ def review(video: Path, transcript: Transcript, highlights: list[Highlight], pea
     if query:
         system += QUERY_GUIDANCE
         payload = {"scene_query": query, "candidates": details}
-    responses = exchange(system, json.dumps(payload, ensure_ascii=False), SCHEMA, images=images)["clips"]
+    dump_kwargs = {"ensure_ascii": False, **({"separators": (",", ":")} if compact_prompts else {})}
+    responses = exchange(system, json.dumps(payload, **dump_kwargs), SCHEMA, images=images)["clips"]
     visible = {image["index"] for image in images}
     minimum_score = (criteria or GameplayCriteria()).minimum_score
+    reviewer_label = getattr(exchange, "label", "") or f"codex:{getattr(exchange, 'model', 'skill')}"
     selected = {}
     for item in responses:
         index = item["index"]
@@ -268,10 +323,26 @@ def review(video: Path, transcript: Transcript, highlights: list[Highlight], pea
             ranking = round((1 - speaker_weight) * score + speaker_weight * 100 * share, 2)
         if clip.selection_score is not None:
             hook = " ".join(item["hook"].split()) if index in visible else ""
-            selected[index] = replace(clip, hook=hook) if hook else clip
+            if refine_metadata and index in visible:
+                blended = round(0.6 * clip.selection_score + 0.4 * score, 2)
+                if speaker_weight is not None and clip.speaker_focus:
+                    share = clip.speaker_focus["preferred_speech_share"]
+                    blended = round((1 - speaker_weight) * blended + speaker_weight * 100 * share, 2)
+                new_title = item["title"].strip()[:70] or clip.title
+                new_reason = item["reason"].strip() or clip.reason
+                selected[index] = replace(
+                    clip,
+                    score=round(blended),
+                    selection_score=blended,
+                    title=new_title,
+                    hook=hook or clip.hook,
+                    reason=new_reason,
+                )
+            else:
+                selected[index] = replace(clip, hook=hook) if hook else clip
         else:
             selected[index] = replace(clip, score=score, title=item["title"], hook=item["hook"],
-                                      reason=item["reason"], llm=f"codex:{exchange.model}", selection_score=ranking)
+                                      reason=item["reason"], llm=reviewer_label, selection_score=ranking)
     chosen = dedupe(list(selected.values()))[:limit]
     chosen_ids = {index for index, clip in selected.items() if any(clip is item for item in chosen)}
     save_report("rejected_or_below_ranking_limit", {item["index"]: item for item in responses}, chosen_ids)
