@@ -44,10 +44,12 @@ def probe_duration(path: Path) -> float:
     return int(h) * 3600 + int(m) * 60 + float(s)
 
 
-def iter_audio_seconds(path: Path, sample_rate: int = 8000) -> Iterator[np.ndarray]:
+def iter_audio_seconds(path: Path, sample_rate: int = 8000, *, check: bool = False,
+                       align: bool = False) -> Iterator[np.ndarray]:
     cmd = [
         ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-i", str(path),
-        "-vn", "-ac", "1", "-ar", str(sample_rate), "-f", "s16le", "-",
+        "-vn", "-ac", "1", "-ar", str(sample_rate),
+        *(["-af", "aresample=async=1:first_pts=0"] if align else []), "-f", "s16le", "-",
     ]
     bytes_per_second = sample_rate * 2
     with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as proc:
@@ -58,3 +60,5 @@ def iter_audio_seconds(path: Path, sample_rate: int = 8000) -> Iterator[np.ndarr
                 break
             usable = len(chunk) - (len(chunk) % 2)
             yield np.frombuffer(chunk[:usable], dtype=np.int16)
+        if check and proc.wait():
+            raise FFmpegError("could not decode an audio stream")

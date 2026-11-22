@@ -1,9 +1,12 @@
 import json
+from unittest.mock import Mock
 
 import cv2
 import numpy as np
+import pytest
 
-from clipper import pipeline
+from clipper import gameplay, pipeline
+from clipper.detect import Highlight
 from clipper.gameplay import _peak_clips, _visual_peaks
 from clipper.cli import main
 from clipper.signals import Peak
@@ -13,6 +16,81 @@ from clipper.transcribe import Transcript, Word
 def answer(request, payload):
     response = request.with_suffix("").with_suffix(".response.json")
     response.write_text(json.dumps(payload), encoding="utf-8")
+
+
+@pytest.mark.parametrize(("spoken", "hook", "guidance"), [
+    ("Esse salto dá para acertar de primeira!", "Era só acertar o primeiro salto",
+     "rather than announcing the failure"),
+    ("A ponte está tremendo. Será que aguenta?", "Essa ponte vai dar trabalho",
+     "plausible consequence"),
+    ("A trilha termina no topo da montanha.", "A trilha leva até o topo da montanha",
+     "specific descriptive"),
+    ("Só falta guardar as ferramentas.", "Era só guardar as ferramentas",
+     "personal relationships"),
+])
+def test_visual_review_refines_ranked_hook_only_with_frames(tmp_path, monkeypatch, spoken, hook, guidance):
+    capture = Mock()
+    capture.get.side_effect = lambda prop: 1 if prop == cv2.CAP_PROP_FPS else 60
+    monkeypatch.setattr(gameplay.cv2, "VideoCapture", lambda path: capture)
+    monkeypatch.setattr(gameplay, "_cached_visual_peaks", lambda *args: [])
+    sheets = iter(["digest", None])
+    monkeypatch.setattr(gameplay, "_sheet", lambda *args: next(sheets))
+    source = tmp_path / "source.mp4"
+    source.touch()
+    candidates = [
+        Highlight(0, 20, 90, "Tentativa no salto", "Gancho anterior", "Motivo", selection_score=90.25),
+        Highlight(25, 45, 80, "Outro salto", "Gancho preservado", "Motivo", selection_score=80.5),
+    ]
+
+    def answer_visual(system, user, schema, *, images):
+        assert "separate from the publication title" in system
+        assert "unchanged when the frames do not substantiate" in system
+        assert guidance in system
+        assert [image["index"] for image in images] == [0]
+        assert json.loads(user)[0]["hook"] == "Gancho anterior"
+        assert json.loads(user)[0]["transcript"] == spoken
+        return {"clips": [
+            {"index": 1, "title": "Ignore", "hook": "Sem apoio visual", "reason": "Ignore", "score": 99},
+            {"index": 0, "title": "Ignore", "hook": hook, "reason": "Ignore", "score": 70},
+        ]}
+
+    exchange = Mock(side_effect=answer_visual, directory=tmp_path)
+    transcript = Transcript("pt", 60, [Word(spoken, 0, 3)])
+    result = gameplay.review(source, transcript, candidates, [], (), 20, 40, 2,
+                             exchange, speaker_weight=None)
+    assert [clip.hook for clip in result] == [hook, "Gancho preservado"]
+    assert [clip.ranking_score for clip in result] == [90.25, 80.5]
+    assert [clip.title for clip in result] == [clip.title for clip in candidates]
+
+
+def test_visual_review_can_recover_a_candidate_with_frames(tmp_path, monkeypatch):
+    capture = Mock()
+    capture.get.side_effect = lambda prop: 1 if prop == cv2.CAP_PROP_FPS else 60
+    monkeypatch.setattr(gameplay.cv2, "VideoCapture", lambda path: capture)
+    monkeypatch.setattr(gameplay, "_cached_visual_peaks", lambda *args: [])
+    monkeypatch.setattr(gameplay, "_sheet", lambda *args: "digest")
+    source = tmp_path / "source.mp4"
+    source.touch()
+    transcript = Transcript("pt", 60, [Word("A ponte aguenta.", 10, 12), Word("Caiu.", 19, 20)])
+    query = "Uma ponte quebra"
+
+    def answer_visual(system, user, schema, *, images):
+        payload = json.loads(user)
+        assert payload["scene_query"] == query
+        candidate, = payload["candidates"]
+        assert candidate["opening_end"] == 15
+        assert "aguenta" in candidate["opening_transcript"]
+        assert "Caiu" not in candidate["opening_transcript"]
+        assert "Caiu" in candidate["timed_transcript"]
+        assert [image["index"] for image in images] == [0]
+        return {"clips": [dict(index=0, score=81, title="A ponte", hook="A ponte aguenta?",
+                               reason="Os quadros mostram a queda.")]}
+
+    exchange = Mock(side_effect=answer_visual, directory=tmp_path)
+    editorial = [{"visual_review_bounds": [10, 30], "reaction_times": [19], "final_score": 60}]
+    clips = gameplay.review(source, transcript, [], [], (), 20, 40, 1, exchange,
+                            speaker_weight=None, query=query, editorial=editorial)
+    assert [(clip.start, clip.end, clip.ranking_score) for clip in clips] == [(10, 30, 81)]
 
 
 def test_codex_exports_windows_and_resumes_through_campaign_review(tmp_path, monkeypatch, capsys):
@@ -90,7 +168,7 @@ def test_gameplay_reviews_local_frames_and_can_select_a_moment_without_speech(tm
     assert len(visual["images"]) == 2
     for image in visual["images"]:
         grid = cv2.imread(str(directory / image["file"]))
-        assert grid.shape == (360, 960, 3)
+        assert grid.shape == (360, 1280, 3)
     clips = json.loads(visual["user"])
     silent = next(clip for clip in clips if not clip["transcript"])
     answer(visual_path, {"clips": [

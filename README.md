@@ -420,6 +420,35 @@ estimar o recorte da webcam. Se a detecção falhar ou precisar de ajuste, use
 `--webcam-crop X,Y,W,H`, com coordenadas em pixels do vídeo original, a partir
 do canto superior esquerdo.
 
+### Seleção multimodal de gameplay
+
+O Clipper analisa mudanças de intensidade, pitch com periodicidade suficiente,
+ritmo de fala e pausas. O cache local `gameplay_audio_events.json` guarda os
+tempos e as medidas. As gravações podem misturar voz, música e efeitos.
+A análise registra mudanças acústicas sem atribuir emoção ou risada.
+
+A revisão investiga inicialmente os 8 segundos anteriores à reação.
+Os limites do corte usam a narrativa e as durações solicitadas.
+Os pesos padrão são 35% para entretenimento, 18% para intensidade, 17% para
+quebra de expectativa, 15% para narrativa, 10% para clareza fora de contexto
+e 5% para ritmo. Use `--gameplay-criteria` para ajustar esses pesos.
+Os critérios editoriais precisam ser atingidos antes do bônus acústico,
+configurável no campo `acoustic_bonus` de `--gameplay-criteria` (0 a 3
+pontos, padrão 3). Os relatórios `*.candidates.json` mostram as pistas,
+os limites e os vereditos da seleção e da revisão visual.
+
+Use `--query` para procurar uma cena descrita em linguagem natural:
+
+```bash
+python -m clipper gameplay "video.mp4" --query "Ele comemora antes de perder a partida" --select-only
+```
+
+A busca também examina janelas de fala sem reação marcada e prioriza cenas que
+correspondem à descrição. Com revisão visual, alguns candidatos abaixo da nota
+editorial são reavaliados com quadros, falas e pistas acústicas com timestamps.
+A abertura recebe atenção nos primeiros cinco segundos. Essa avaliação usa o
+vídeo de origem e serve como critério editorial.
+
 ## Como funciona
 
 - **Seleção**: a transcrição é cortada em janelas de 15 min com 60 s de sobreposição. Cada janela vai ao LLM com os critérios de viralidade (gancho, pico emocional, opinião forte, revelação, conflito, frase de efeito, clímax, valor prático) e com os picos de áudio/chat como dica. As bordas são alinhadas às palavras e estendidas até o fim da frase; cortes sobrepostos são descartados pelo score.

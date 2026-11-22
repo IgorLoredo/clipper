@@ -153,7 +153,8 @@ def test_bad_speaker_name_is_rejected_before_download_or_transcription(tmp_path,
         pipeline.run("url", tmp_path, Settings(), options)
 
 
-def test_template_metadata_and_credit_are_rendered_without_spoken_captions(tmp_path, monkeypatch):
+@pytest.mark.parametrize("content_type", ["gameplay", "podcast"])
+def test_template_metadata_and_credit_are_rendered_without_spoken_captions(tmp_path, monkeypatch, content_type):
     template = tmp_path / "template.json"
     template.write_text(json.dumps({"name": "brand", "background_mode": "framed",
                                     "title_enabled": True, "credit_enabled": True}), encoding="utf-8")
@@ -171,9 +172,17 @@ def test_template_metadata_and_credit_are_rendered_without_spoken_captions(tmp_p
     transcript = Transcript("pt", 30, [Word("fala", 0, 1)])
     options = pipeline.Options(captions=False, template_file=template, credit="Fonte: Original")
     pipeline.render_all(source, transcript, [Highlight(0, 20, 90, "Título", "Hook", "Reason")],
-                        Settings(), options, "template", content_type="gameplay")
-    assert "TemplateTitle" in captured["ass"] and "TemplateCredit" in captured["ass"]
-    assert not any(",Main," in line for line in captured["ass"].splitlines() if line.startswith("Dialogue"))
+                        Settings(), options, "template", content_type=content_type)
+    events = [line for line in captured["ass"].splitlines() if line.startswith("Dialogue")]
+    assert any(",TemplateCredit," in line for line in events)
+    start = "0:00:05.20" if content_type == "gameplay" else "0:00:00.00"
+    assert any(f",{start},0:00:20.00,TemplateTitle," in line for line in events)
+    opening = [line for line in events if ",Main," in line]
+    if content_type == "gameplay":
+        assert len(opening) == 1 and "HOOK" in opening[0]
+        assert opening[0].startswith("Dialogue: 1,0:00:00.00,0:00:05.20")
+    else:
+        assert opening == []
     assert captured["visual"] == (1080, 1920, "framed", "0x00E5FF@0.95")
     manifest = json.loads((tmp_path / "clips/template/clips.json").read_text(encoding="utf-8"))
     assert manifest[0]["template"]["name"] == "brand"

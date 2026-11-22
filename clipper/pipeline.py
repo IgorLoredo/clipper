@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from clipper import detect as detect_mod
-from clipper import attention, campaign, llm, reframe, signals
+from clipper import attention, campaign, gameplay_audio, llm, reframe, signals
 from clipper.branding import Branding
 from clipper.captions import CaptionStyle, build_ass, load_template
 from clipper.codex_exchange import CodexExchange
@@ -47,6 +47,7 @@ class Options:
     visual_review_llm: str = "codex"
     template_file: Path | None = None
     credit: str = ""
+    query: str = ""
 
 
 def existing_ranges(workdir: Path) -> tuple[tuple[float, float], ...]:
@@ -62,6 +63,8 @@ def selection_id(llm_id: str, options: Options, excluded: tuple[tuple[float, flo
     if excluded:
         digest = hashlib.sha256(json.dumps(excluded).encode()).hexdigest()[:10]
         name += f"-exclude-{digest}"
+    if options.query:
+        name += f"-query-{hashlib.sha256(options.query.encode()).hexdigest()[:10]}"
     return name
 
 
@@ -84,8 +87,21 @@ def run(source: str, out_root: Path, settings: Settings, options: Options, chat:
     src = fetch(source, out_root, chat)
     settings = replace(settings, codex_directory=src.workdir / "codex-llm")
     print(f"[run] workdir {src.workdir}", flush=True)
-    transcript = transcribe(src.video, src.workdir / "transcript.json", settings, options.language)
     content_type = reframe.resolve_content_type(src.title, options.content_type)
+    transcript_cache = src.workdir / "transcript.json"
+    try:
+        transcript = transcribe(src.video, transcript_cache, settings, options.language)
+    except (IndexError, ValueError):
+        if content_type != "gameplay" or transcript_cache.is_file():
+            raise
+        import av
+
+        with av.open(str(src.video)) as media:
+            if media.streams.audio or not media.duration:
+                raise
+            transcript = Transcript(options.language or "pt", media.duration / av.time_base)
+        transcript.save(transcript_cache)
+        print("[gameplay] no audio stream; using visual selection when enabled", flush=True)
     print(f"[layout] {content_type} ({'manual' if options.content_type != 'auto' else 'title detection'})", flush=True)
     preference = None
     if options.prefer_speaker:
@@ -93,6 +109,9 @@ def run(source: str, out_root: Path, settings: Settings, options: Options, chat:
             raise ValueError("speaker preference requires a speaker timeline; Whisper does not identify speakers")
         preference = load_preference(options.speaker_turns, options.prefer_speaker, transcript.duration,
                                      options.speaker_mode, options.speaker_weight)
+    audio_events = None
+    if content_type == "gameplay":
+        audio_events = gameplay_audio.collect(src.video, transcript, src.workdir / "gameplay_audio_events.json")
     peaks = signals.collect(src.video, transcript.duration, src.chat, src.workdir / "signals.json")
     context = attention.load(transcript.duration, peaks, src.chat, src.engagement or src.workdir / "engagement.json")
     peaks = [p for p in peaks if p.kind != "chat"] + context.chat_peaks() + context.replay_peaks()
@@ -118,7 +137,9 @@ def run(source: str, out_root: Path, settings: Settings, options: Options, chat:
         options.min_dur, options.max_dur, cache, excluded=excluded, preference=preference,
         window_seconds=options.llm_window_seconds, content_type=content_type,
         campaign_context=brief.summary() if brief else "",
-        **({"gameplay_criteria": options.gameplay_criteria} if content_type == "gameplay" else {}),
+        query=options.query,
+        **({"gameplay_criteria": options.gameplay_criteria, "gameplay_audio": audio_events}
+           if content_type == "gameplay" else {}),
     )
     if visual_review:
         from clipper.gameplay import review
@@ -126,11 +147,18 @@ def run(source: str, out_root: Path, settings: Settings, options: Options, chat:
         visual_settings = settings.with_llm(options.visual_review_llm)
         if visual_settings.llm_provider != "codex" or visual_settings.llm_fallbacks:
             raise ValueError("visual review currently requires --visual-review-llm codex[:model]")
+        selection_report = cache.with_suffix(".candidates.json")
+        diagnostics = (json.loads(selection_report.read_text(encoding="utf-8"))["candidates"]
+                       if selection_report.is_file() else [])
         highlights = review(src.video, transcript, highlights, peaks, excluded,
                             options.min_dur, options.max_dur, options.max_clips,
                             CodexExchange(settings.codex_directory, visual_settings.model_for("codex")),
                             speaker_weight=preference.weight if preference else None,
-                            campaign_context=brief.summary() if brief else "")
+                            campaign_context=brief.summary() if brief else "",
+                            query=options.query,
+                            editorial=diagnostics, audio_events=audio_events or [],
+                            criteria=options.gameplay_criteria or GameplayCriteria(),
+                            report_path=cache.with_suffix(".visual.candidates.json"))
         run_id += f"-visual-{slugify(visual_settings.model_for('codex'), 30)}"
         cache = src.workdir / f"highlights.{run_id}.json"
         cache.write_text(json.dumps([asdict(clip) for clip in highlights], ensure_ascii=False, indent=2),
@@ -242,7 +270,8 @@ def render_all(src: Source, transcript: Transcript, highlights: list[Highlight],
         if brand and brand.mode == "horizontal":
             overlay = write_overlay(brand, clips_dir / f"{stem}.overlay.png", aspect, h.title)
         subs = None
-        opening = " ".join((h.hook.strip() or h.title).split()) if gameplay_split else ""
+        opening = (" ".join((h.hook.strip() or h.title).split())
+                   if content_type == "gameplay" and (gameplay_split or options.template_file) else "")
         overlay_text = ((template.title_enabled and bool(h.title.strip()))
                         or (template.brand_enabled and bool(template.brand.strip()))
                         or (template.credit_enabled and bool(options.credit.strip() or template.credit.strip())))
@@ -250,9 +279,10 @@ def render_all(src: Source, transcript: Transcript, highlights: list[Highlight],
             subs = clips_dir / f"{stem}.ass"
             if options.template_file:
                 captions = build_ass(transcript.words, h.start, h.end, template=template,
-                                     title=h.title, credit=options.credit, include_captions=options.captions)
+                                     title=h.title, credit=options.credit, include_captions=options.captions,
+                                     opening=opening)
             elif gameplay_split:
-                style = CaptionStyle(size=64, outline_width=5, margin_v=OUT_H - SPLIT_WEBCAM_HEIGHT - 26)
+                style = CaptionStyle(size=70, outline_width=5, margin_v=OUT_H - SPLIT_WEBCAM_HEIGHT - 26)
                 captions = build_ass(transcript.words, h.start, h.end, style,
                                      include_captions=options.captions, opening=opening)
             elif brand:

@@ -56,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--batch", default=None, help="name for a new batch of clips; existing batches are preserved")
     run_p.add_argument("--exclude-existing", action="store_true", help="avoid moments already rendered as clips")
     run_p.add_argument("--select-only", action="store_true", help="save selected timestamps without rendering")
+    run_p.add_argument("--query", default="", help="describe the moments to find in the video")
     run_p.add_argument("--gameplay-criteria", type=Path, help="JSON overrides for gameplay ranking weights and thresholds")
     visual = run_p.add_mutually_exclusive_group()
     visual.add_argument("--visual-review", dest="visual_review", action="store_true", default=None,
@@ -227,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
                           batch=args.batch, exclude_existing=args.exclude_existing,
                           prefer_speaker=args.prefer_speaker, speaker_turns=args.speaker_turns,
                           speaker_mode=args.speaker_mode, speaker_weight=args.speaker_weight,
-                          content_type=args.content_type,
+                          content_type=args.content_type, query=args.query.strip(),
                           llm_window_seconds=args.llm_window_seconds or (300.0 if args.notebook else 900.0),
                           campaign_file=args.campaign, review_llm=args.review_llm, review_mode=args.review_mode,
                           visual_review=visual_review, visual_review_llm=args.visual_review_llm,

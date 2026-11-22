@@ -11,7 +11,7 @@ PUNCTUATION = (".", "!", "?", ",", "…", ":", ";")
 @dataclass(frozen=True)
 class CaptionStyle:
     font: str = "Arial Black"
-    size: int = 92
+    size: int = 100
     primary: str = "&H00FFFFFF"
     highlight: str = "&H00E5FF&"
     base: str = "&HFFFFFF&"
@@ -205,8 +205,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         margin = max(1, style.margin_v - round(height * 52 / 1920))
         text = f"{{\\fs{size}\\c{style.highlight}}}{ass_text(opening.upper())}"
         lines.append(f"Dialogue: 1,0:00:00.00,{ass_time(opening_end)},Main,,0,0,{margin},,{text}")
-    if template.title_enabled and title.strip():
-        lines.append(f"Dialogue: 0,0:00:00.00,{ass_time(clip_len)},TemplateTitle,,0,0,0,,{ass_text(title)}")
+    if template.title_enabled and title.strip() and opening_end < clip_len:
+        lines.append(f"Dialogue: 0,{ass_time(opening_end)},{ass_time(clip_len)},TemplateTitle,,0,0,0,,{ass_text(title)}")
     if template.brand_enabled and template.brand.strip():
         lines.append(f"Dialogue: 0,0:00:00.00,{ass_time(clip_len)},TemplateBrand,,0,0,0,,{ass_text(template.brand)}")
     credit_text = credit.strip() or template.credit.strip()

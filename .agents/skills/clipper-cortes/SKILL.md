@@ -9,6 +9,8 @@ Ao iniciar uma seleção sem tipo definido, pergunte uma vez: **Qual é o tipo d
 
 Quando o usuário quiser apenas os trechos, acrescente `--select-only` e apresente os timestamps selecionados. Pedidos de gameplay com o campo `reviews` pedem um parecer por candidato, inclusive os descartados. Cite os índices das unidades de fala para setup, desenvolvimento, clímax e encerramento e dê notas separadas para cada critério. Leia o relatório `*.candidates.json` para conferir os cortes e motivos.
 
+Em gameplay, comece pelos 8 segundos anteriores à reação e amplie a busca se a causa começar antes. Encontre a ação que explica a reação e a conclusão que permite entender o corte sozinho. Consulte `gameplay_audio_events.json` para conferir os sinais acústicos. Eles vêm do áudio misturado e servem como pistas. Use os quadros para verificar ou contestar a interpretação da fala, inclusive em cenas sem diálogo. Descreva risadas, vitórias ou falhas apenas quando houver evidência.
+
 Execute a partir do checkout que contém `pyproject.toml` e o pacote `clipper`. Use o ambiente Python do projeto. Para um vídeo ou URL, rode `python -m clipper run "<fonte>" --llm codex` com as opções de duração, quantidade, campanha e lote solicitadas. Guarde o comando exato e o diretório de execução para retomar.
 
 Para gameplay, prefira `python -m clipper gameplay "<fonte>" --llm <provedor>`. A seleção pode usar Gemini, Ollama, DeepSeek ou outro provedor configurado; a revisão visual usa Codex separadamente por padrão. Troque o modelo visual com `--visual-review-llm codex:<modelo>` ou use `--no-visual-review` quando o usuário pedir seleção só pela transcrição.
@@ -25,7 +27,9 @@ Na avaliação de gameplay, dê uma nota de quebra de expectativa quando o próp
 
 Para gameplay, use `--gameplay-split` para garantir a saída em 9:16, com webcam no topo e gameplay embaixo.
 
-- Escreva no campo `hook` uma chamada curta e específica que desperte curiosidade pelo clímax e preserve a surpresa do desfecho.
+- Use `title` para contextualizar a publicação e `hook` para abrir o vídeo. Identifique a situação inicial, a expectativa, o desenvolvimento, o clímax, a reação e o desfecho. Use a contradição ou a consequência que a cena sustenta e preserve a surpresa principal.
+- Prefira de 5 a 14 palavras em português brasileiro. Use humor, ironia ou duplo sentido quando a cena der margem. Em uma cena direta, use uma descrição específica. Evite frases genéricas e relações pessoais, ações ou resultados inventados.
+- Na revisão visual, confira relevância, especificidade, curiosidade, coerência, honestidade, originalidade e legibilidade. Melhore a chamada quando os quadros e a fala sustentarem uma interpretação melhor. Se a evidência faltar, mantenha a chamada existente.
 - Mostre a chamada desde o início por 5,2 segundos. Use o estilo da legenda, em caixa alta, todo em amarelo (`&H00E5FF&` no ASS), com contorno escuro e fonte 25% maior. Centralize na horizontal e posicione a chamada 52 px abaixo da posição da legenda em 1080 × 1920. Com o estilo Main de margem vertical 1174, use margem 1122 na chamada.
 - Durante a chamada, oculte as legendas de fala do Clipper. Depois, retome as legendas na próxima fala, na posição original e com o destaque amarelo apenas na palavra atual.
 - Confira a abertura e a transição para a primeira legenda em uma prévia antes de exportar o lote.

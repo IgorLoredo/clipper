@@ -74,6 +74,37 @@ def test_podcast_uses_original_highlights_schema(tmp_path):
     assert not cache.with_suffix(".candidates.json").exists()
 
 
+@pytest.mark.parametrize("score", [60, 80])
+def test_gameplay_query_checks_calm_speech_and_preserves_bounds_for_review(tmp_path, score):
+    query = "Ele celebra antes de perder."
+    transcript = Transcript("pt", 60, [
+        Word("A partida acabou, ganhamos.", 0, 2),
+        Word("Perdemos na verdade.", 5, 7),
+        Word("Eu comemorei cedo demais.", 10, 12),
+    ])
+
+    def review(system, user, schema):
+        request = json.loads(user)
+        assert request["scene_query"] == query
+        cluster, = request["clusters"]
+        assert cluster["query_window"] and not cluster["reaction_times"]
+        return {"reviews": [dict(
+            id=cluster["id"], accepted=True, first=0, development=0, payoff=1, last=2,
+            title="Celebrou cedo", hook="A partida parecia decidida", reason="O placar vira",
+            **dict.fromkeys(GameplayCriteria().weights, score),
+        )]}
+
+    cache = tmp_path / "highlights.json"
+    clips = detect.detect(transcript, [], review, 1, 10, 20, cache,
+                          content_type="gameplay", query=query)
+    entry, = json.loads(cache.with_suffix(".candidates.json").read_text(encoding="utf-8"))["candidates"]
+    if score == 60:
+        assert not clips
+        assert entry["visual_review_bounds"] == [0, 12]
+    else:
+        assert [(clip.start, clip.end) for clip in clips] == [(0, 12)]
+
+
 def test_weights_can_be_overridden():
     scores = dict(narrative=100, intensity=0, entertainment=0, standalone=0, pace=0, expectation_break=0)
     assert GameplayCriteria().score(scores) == 15
@@ -85,7 +116,7 @@ def test_expectation_break_improves_rank_without_being_required():
     criteria = GameplayCriteria()
     scores = dict(narrative=80, intensity=80, entertainment=80, standalone=80, pace=80, expectation_break=0)
     assert criteria.score(scores) >= criteria.minimum_score
-    assert criteria.score(scores | {"expectation_break": 90}) == criteria.score(scores) + 9
+    assert criteria.score(scores | {"expectation_break": 90}) == pytest.approx(criteria.score(scores) + 15.3)
 
 
 @pytest.mark.parametrize(("command", "expected"), [
