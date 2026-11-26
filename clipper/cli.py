@@ -41,6 +41,7 @@ def _add_render_options(parser: argparse.ArgumentParser) -> None:
                         help="also write a PNG at this time within each clip")
     parser.add_argument("--preview-safe-zone", action="store_true",
                         help="draw TikTok/Reels/Shorts UI safe-zone guides on preview PNGs")
+    parser.add_argument("--preview-only", action="store_true", help="preview the top clip without exporting MP4")
     parser.add_argument("--normalize-audio", action="store_true",
                         help="normalize clip loudness (-14 LUFS) with short audio micro-fades")
     parser.add_argument("--dynamic-opening", action="store_true",
@@ -123,7 +124,6 @@ def build_parser() -> argparse.ArgumentParser:
     render_p.add_argument("--content-type", choices=("auto", "podcast", "gameplay", "anime", "mass"), default="auto")
     _add_render_options(render_p)
     render_p.add_argument("--limit", type=int, help="render only the highest-ranked N clips")
-    render_p.add_argument("--preview-only", action="store_true", help="preview the top clip without exporting MP4")
     render_p.add_argument("--template", type=Path, default=None, help="JSON visual template")
     render_p.add_argument("--credit", default="", help="source credit shown by the visual template")
     overlay_p = sub.add_parser("overlay", help="generate the transparent ViraCortes PNG")
@@ -140,6 +140,14 @@ def build_parser() -> argparse.ArgumentParser:
     review_p.add_argument("workdir", type=Path, help="existing video output folder (out/<video>)")
     review_p.add_argument("--host", default="127.0.0.1")
     review_p.add_argument("--port", type=int, default=8765)
+    review_player_p = sub.add_parser("review-player", help="start the generic clip approval player with external insights")
+    review_player_p.add_argument("workdir", type=Path, help="existing video output folder (out/<video>)")
+    review_player_p.add_argument("--port", type=int, default=8765)
+    review_player_p.add_argument("--insights-dir", type=Path, default=None, help="external folder for insights/*.md")
+    rp_p = sub.add_parser("review-player", help="serve the approval player with external insights")
+    rp_p.add_argument("workdir", type=Path, help="existing video output folder (out/<video>)")
+    rp_p.add_argument("--port", type=int, default=8765)
+    rp_p.add_argument("--insights-dir", type=Path, default=None, help="external folder for clip insights")
     diarize_p = sub.add_parser("diarize", help="separate voices locally and map names from reference intervals")
     diarize_p.add_argument("workdir", type=Path)
     diarize_p.add_argument("--segmentation-model", type=Path, required=True)
@@ -184,6 +192,14 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             print(f"[error] {exc}", file=sys.stderr, flush=True)
             return 2
+        return 0
+    if args.command == "review-player":
+        from clipper.review_player import serve_review_player
+        serve_review_player(args.workdir, port=args.port, insights_dir=args.insights_dir)
+        return 0
+    if args.command == "review-player":
+        from clipper.review_player import serve_review_player
+        serve_review_player(args.workdir, port=args.port, insights_dir=args.insights_dir)
         return 0
     if args.command == "diarize":
         from clipper.diarize import run as diarize
@@ -291,6 +307,7 @@ def main(argv: list[str] | None = None) -> int:
                           campaign_file=args.campaign, review_llm=args.review_llm, review_mode=args.review_mode,
                           visual_review=visual_review, visual_review_llm=args.visual_review_llm,
                           template_file=args.template, credit=args.credit, brand=brand,
+                          preview_only=args.preview_only,
                           preview_at=args.preview_at, gameplay_split=args.gameplay_split,
                           webcam_crop=args.webcam_crop,
                           transcript_source=args.transcript_source,
@@ -316,7 +333,7 @@ def main(argv: list[str] | None = None) -> int:
                 except TypeError as exc:
                     raise ValueError(f"invalid gameplay criteria: {exc}") from exc
             workdir = run(args.source, out_root, settings, options, args.chat)
-            if options.select_only:
+            if options.select_only or options.preview_only:
                 complete_status(workdir / "codex-llm", ["clipper", *command_args])
                 return 0
         except CodexResponseRequired as exc:

@@ -1,0 +1,1036 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clipper Player — Revisão de Cortes</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --panel: #171a23;
+      --panel-2: #1f2430;
+      --border: #2a3142;
+      --text: #eef1f7;
+      --muted: #98a2b3;
+      --accent: #7c5cff;
+      --accent-2: #22d3ee;
+      --ok: #22c55e;
+      --bad: #ef4444;
+      --warn: #f59e0b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 430px;
+      overflow: hidden;
+    }
+    .main {
+      display: flex;
+      flex-direction: column;
+      padding: 14px 18px 22px;
+      gap: 10px;
+      overflow-y: auto;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .topbar h1 { margin: 0; font-size: 16px; font-weight: 700; }
+    .sub { color: var(--muted); font-size: 12.5px; }
+    .video-wrap {
+      position: relative;
+      width: 100%;
+      background: #000;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      aspect-ratio: 16 / 9;
+      max-height: 58vh;
+      flex-shrink: 0;
+    }
+    video { width: 100%; height: 100%; display: block; background: #000; }
+    .webcam-box {
+      position: absolute;
+      border: 2px solid #22c55e;
+      background: rgba(34, 197, 94, 0.14);
+      pointer-events: none;
+      display: none;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7);
+    }
+    .webcam-box.visible { display: block; }
+    .webcam-tag {
+      position: absolute;
+      top: 4px;
+      left: 4px;
+      background: rgba(15, 17, 23, 0.85);
+      color: #86efac;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    .scrubber-card, .controls, .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 14px;
+    }
+    .scrubber-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .scrubber-row input[type="range"] {
+      flex: 1;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    button, .btn-link, select {
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 12.5px;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    button:hover, .btn-link:hover, select:hover { border-color: var(--accent); }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.ok-btn { background: #15803d; border-color: #16a34a; color: #fff; }
+    button.bad-btn { background: #991b1b; border-color: #dc2626; color: #fff; }
+    button.ghost { color: var(--muted); }
+    label.toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 12.5px;
+      color: var(--muted);
+      cursor: pointer;
+      user-select: none;
+    }
+    .card { display: flex; flex-direction: column; gap: 10px; }
+    .badges { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .badge {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .badge.focus { border-color: #7c5cff; color: #c4b5fd; }
+    .badge.funny { border-color: #06b6d4; color: #a5f3fc; }
+    .badge.shift { border-color: var(--warn); color: #fde68a; }
+    .badge.ok { border-color: var(--ok); color: #86efac; }
+    .badge.bad { border-color: var(--bad); color: #fca5a5; }
+    .hook-box {
+      background: #12151e;
+      border-left: 3px solid var(--accent-2);
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 13.5px;
+    }
+    .review-panel {
+      background: #12151e;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .field-group { display: flex; flex-direction: column; gap: 5px; }
+    .field-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .field-head label {
+      font-size: 12.5px;
+      font-weight: 600;
+      color: #d0d7e3;
+    }
+    textarea {
+      width: 100%;
+      min-height: 62px;
+      resize: vertical;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-family: inherit;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+    textarea:focus { outline: none; border-color: var(--accent); }
+    .sidebar {
+      background: var(--panel);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    .sidebar-head {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .sidebar-actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .sidebar-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .section-label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      padding: 6px 4px 2px;
+    }
+    .clip-item {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      padding: 9px 10px;
+      display: grid;
+      grid-template-columns: 24px minmax(0, 1fr);
+      gap: 8px;
+      cursor: pointer;
+      transition: border-color 0.15s;
+    }
+    .clip-item:hover { border-color: #4f5b78; }
+    .clip-item.active { border-color: var(--accent); background: #232038; }
+    .clip-item.approved { box-shadow: inset 3px 0 0 var(--ok); }
+    .clip-item.rejected { box-shadow: inset 3px 0 0 var(--bad); opacity: 0.85; }
+    .clip-status-icon {
+      font-size: 13px;
+      font-weight: 800;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding-top: 2px;
+    }
+    .clip-title { font-size: 12.5px; font-weight: 600; line-height: 1.3; margin-bottom: 3px; }
+    .clip-meta { font-size: 11px; color: var(--muted); display: flex; gap: 8px; flex-wrap: wrap; }
+    .status-msg { font-size: 12px; color: #86efac; min-height: 16px; word-break: break-word; }
+    @media (max-width: 980px) {
+      body { grid-template-columns: 1fr; height: auto; overflow: auto; }
+      .sidebar { height: auto; border-left: none; border-top: 1px solid var(--border); }
+    }
+  </style>
+</head>
+<body>
+  <div class="main">
+    <div class="topbar">
+      <div>
+        <h1>CELLBIT JOGANDO GTA 6 MAIS UMA VEZ — Revisor de Cortes</h1>
+        <div class="sub" id="timeInfo">Selecione um corte ao lado ou abra via link direto (?clip=1..14)</div>
+      </div>
+      <div class="sub" id="reviewCounter">0 aprovados • 0 reprovados • 14 pendentes</div>
+    </div>
+
+    <div class="video-wrap">
+      <video id="player" src="source.mp4" controls preload="metadata"></video>
+      <div class="webcam-box" id="webcamBox">
+        <span class="webcam-tag" id="webcamTag">Webcam</span>
+      </div>
+    </div>
+
+    <div class="scrubber-card">
+      <div class="scrubber-row">
+        <span class="sub" id="localStartLbl" style="min-width:60px;">00:00:00</span>
+        <input type="range" id="localScrubber" min="0" max="100" step="0.5" value="20">
+        <span class="sub" id="localEndLbl" style="min-width:60px; text-align:right;">00:00:00</span>
+      </div>
+      <div style="display:flex; justify-content:space-between; margin-top:4px;">
+        <span class="sub" id="curTimeLbl">Atual: 00:00:00</span>
+        <span class="sub">Barra de precisão local (±20s em volta do corte) • Setas ← / → pulam conforme passo escolhido</span>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button class="primary" id="replayBtn">▶ Rever corte</button>
+      <button id="stepBack10Btn">-10s</button>
+      <button id="stepBack5Btn">-5s</button>
+      <button id="stepFwd5Btn">+5s</button>
+      <button id="stepFwd10Btn">+10s</button>
+      <label class="toggle">
+        Setas ←/→:
+        <select id="arrowStepSelect">
+          <option value="5" selected>5s</option>
+          <option value="10">10s</option>
+        </select>
+      </label>
+      <button id="prevBtn">← Anterior</button>
+      <button id="nextBtn">Próximo →</button>
+      <a class="btn-link" id="ytLink" href="https://www.youtube.com/watch?v=CGl2GnJRV4g" target="_blank" rel="noopener">YouTube</a>
+      <label class="toggle">
+        <input type="checkbox" id="autoStop" checked>
+        Pausar no fim
+      </label>
+      <label class="toggle">
+        <input type="checkbox" id="showWebcam" checked>
+        Área webcam
+      </label>
+    </div>
+
+    <div class="card">
+      <div class="badges" id="clipBadges"></div>
+      <div style="font-size: 16.5px; font-weight: 700;" id="clipTitle">—</div>
+      <div class="hook-box" id="clipHook">—</div>
+      <div style="font-size: 13px; color: var(--muted);" id="clipReason">—</div>
+      <div style="font-size: 12px; color: #fde68a;" id="clipWebcamNote"></div>
+
+      <div class="review-panel">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+          <strong style="font-size:13.5px;">Avaliação deste corte</strong>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button id="approveBtn">✓ Aprovar</button>
+            <button id="rejectBtn">✕ Reprovar</button>
+            <button id="clearStatusBtn" class="ghost">Limpar status</button>
+          </div>
+        </div>
+
+        <div id="approvedFields" style="display:none; flex-direction:column; gap:10px;">
+          <div class="field-group">
+            <div class="field-head">
+              <label for="improvementsInput">Melhorias para o clipe (tempo de início/fim ou outra melhoria — deixe vazio se já estiver bom)</label>
+              <div style="display:flex; gap:6px;">
+                <button type="button" id="stampStartBtn" style="padding:4px 8px; font-size:11.5px;">+ Início atual</button>
+                <button type="button" id="stampEndBtn" style="padding:4px 8px; font-size:11.5px;">+ Fim atual</button>
+              </div>
+            </div>
+            <textarea id="improvementsInput" placeholder="Ex.: começar em 02:48:35, terminar 5s depois, trocar título/hook... (vazio = está bom)"></textarea>
+          </div>
+          <div class="field-group">
+            <div class="field-head">
+              <label for="approveReasonInput">Por que este corte foi aprovado? (usado nos insights para próximos vídeos)</label>
+            </div>
+            <textarea id="approveReasonInput" placeholder="Ex.: plot twist engraçado, tema sobrenatural forte, ótimo ritmo inicial..."></textarea>
+          </div>
+        </div>
+
+        <div id="rejectedFields" style="display:none; flex-direction:column; gap:10px;">
+          <div class="field-group">
+            <div class="field-head">
+              <label for="rejectReasonInput">Motivo da reprovação (usado nos insights para evitar erros nos próximos vídeos)</label>
+            </div>
+            <textarea id="rejectReasonInput" placeholder="Ex.: começa sem contexto, longo demais, humor não funcionou, falta clímax..."></textarea>
+          </div>
+        </div>
+
+        <div id="pendingHint" class="sub">
+          Clique em <strong>Aprovar</strong> (para registrar melhorias opcionais e o porquê) ou <strong>Reprovar</strong> (para registrar o motivo).
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <aside class="sidebar">
+    <div class="sidebar-head">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+        <strong style="font-size:14px;">14 Cortes Sugeridos</strong>
+      </div>
+      <div class="sidebar-actions">
+        <button class="primary" id="saveInsightsBtn" style="font-size:12px;">💾 Salvar Insights (.md)</button>
+        <button id="downloadMdBtn" style="font-size:12px;">⬇ Baixar .md</button>
+        <button class="ok-btn" id="copyBtn" style="font-size:12px;">📋 Copiar resumo</button>
+      </div>
+      <div class="status-msg" id="actionStatus"></div>
+    </div>
+    <div class="sidebar-list" id="clipList"></div>
+  </aside>
+
+  <script>
+    const VIDEO_TITLE = "CELLBIT JOGANDO GTA 6 MAIS UMA VEZ";
+    let VIDEO_URL = "";
+    let YT_ID = "";
+    let VIDEO_TITLE = "Vídeo";
+    let CLIPS = [];
+
+    const STORAGE_KEY = "clipper_review_feedback_CGl2GnJRV4g_v2";
+    const OLD_APPROVAL_KEY = "clipper_approved_CGl2GnJRV4g_v1";
+    const STEP_KEY = "clipper_arrow_step_v1";
+
+    let feedback = loadLocalFeedback();
+    let activeIndex = 0;
+    let customClip = null;
+    let pendingSeek = null;
+
+    const video = document.getElementById("player");
+    const webcamBox = document.getElementById("webcamBox");
+    const webcamTag = document.getElementById("webcamTag");
+    const autoStopEl = document.getElementById("autoStop");
+    const showWebcamEl = document.getElementById("showWebcam");
+    const localScrubber = document.getElementById("localScrubber");
+    const arrowStepSelect = document.getElementById("arrowStepSelect");
+    const improvementsInput = document.getElementById("improvementsInput");
+    const approveReasonInput = document.getElementById("approveReasonInput");
+    const rejectReasonInput = document.getElementById("rejectReasonInput");
+    const actionStatus = document.getElementById("actionStatus");
+
+    arrowStepSelect.value = localStorage.getItem(STEP_KEY) || "5";
+
+    function emptyEntry() {
+      return { status: "pending", improvements: "", approveReason: "", rejectReason: "" };
+    }
+
+    function loadLocalFeedback() {
+      let data = {};
+      try {
+        data = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+      } catch {
+        data = {};
+      }
+      // Migrate v1 checkboxes if present
+      try {
+        const old = JSON.parse(localStorage.getItem(OLD_APPROVAL_KEY) || "[]");
+        if (Array.isArray(old)) {
+          for (const num of old) {
+            const k = String(num);
+            if (!data[k]) data[k] = { ...emptyEntry(), status: "approved" };
+          }
+        }
+      } catch {}
+      return data;
+    }
+
+    function getEntry(num) {
+      const k = String(num);
+      if (!feedback[k]) feedback[k] = emptyEntry();
+      return feedback[k];
+    }
+
+    function saveFeedback() {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(feedback));
+      updateCounters();
+    }
+
+    function updateCounters() {
+      let ok = 0, bad = 0, pend = 0;
+      for (const c of CLIPS) {
+        const st = getEntry(c.num).status;
+        if (st === "approved") ok++;
+        else if (st === "rejected") bad++;
+        else pend++;
+      }
+      document.getElementById("reviewCounter").textContent =
+        `${ok} aprovado(s) • ${bad} reprovado(s) • ${pend} pendente(s)`;
+    }
+
+    function fmt(sec) {
+      const s = Math.max(0, Math.round(sec));
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const r = s % 60;
+      return [h, m, r].map(v => String(v).padStart(2, "0")).join(":");
+    }
+
+    function currentClip() {
+      return customClip || CLIPS[activeIndex];
+    }
+
+    function updateWebcamOverlay(t) {
+      const clip = currentClip();
+      if (!showWebcamEl.checked || !clip || !clip.webcamSegments) {
+        webcamBox.classList.remove("visible");
+        return;
+      }
+      let seg = clip.webcamSegments[0];
+      for (const candidate of clip.webcamSegments) {
+        if (t >= candidate.from) seg = candidate;
+      }
+      const [x, y, w, h] = seg.crop;
+      webcamBox.style.left = `${(x / 1920) * 100}%`;
+      webcamBox.style.top = `${(y / 1080) * 100}%`;
+      webcamBox.style.width = `${(w / 1920) * 100}%`;
+      webcamBox.style.height = `${(h / 1080) * 100}%`;
+      webcamTag.textContent = `Webcam: ${seg.label}`;
+      webcamBox.classList.add("visible");
+    }
+
+    function syncScrubberBounds(clip) {
+      const wStart = Math.max(0, Math.floor(clip.start - 20));
+      const wEnd = Math.ceil(clip.end + 20);
+      localScrubber.min = String(wStart);
+      localScrubber.max = String(wEnd);
+      localScrubber.value = String(Math.max(wStart, Math.min(wEnd, video.currentTime || clip.start)));
+      document.getElementById("localStartLbl").textContent = fmt(wStart);
+      document.getElementById("localEndLbl").textContent = fmt(wEnd);
+      document.getElementById("curTimeLbl").textContent = `Atual: ${fmt(video.currentTime || clip.start)}`;
+    }
+
+    function seekTo(sec, autoplay = true) {
+      const target = Math.max(0, sec);
+      if (video.readyState >= 1) {
+        const dur = Number.isFinite(video.duration) ? video.duration : target + 100;
+        video.currentTime = Math.min(dur, target);
+        if (autoplay) video.play().catch(() => {});
+      } else {
+        pendingSeek = target;
+      }
+      document.getElementById("curTimeLbl").textContent = `Atual: ${fmt(target)}`;
+      const minV = parseFloat(localScrubber.min);
+      const maxV = parseFloat(localScrubber.max);
+      if (target >= minV && target <= maxV) localScrubber.value = String(target);
+    }
+
+    function stepSeconds(delta) {
+      const base = video.readyState >= 1 ? video.currentTime : currentClip().start;
+      seekTo(base + delta, false);
+    }
+
+    function renderReviewPanel() {
+      const clip = currentClip();
+      const approveBtn = document.getElementById("approveBtn");
+      const rejectBtn = document.getElementById("rejectBtn");
+      const approvedFields = document.getElementById("approvedFields");
+      const rejectedFields = document.getElementById("rejectedFields");
+      const pendingHint = document.getElementById("pendingHint");
+
+      if (!clip || !clip.num) {
+        approvedFields.style.display = "none";
+        rejectedFields.style.display = "none";
+        pendingHint.style.display = "none";
+        return;
+      }
+
+      const entry = getEntry(clip.num);
+      approveBtn.className = entry.status === "approved" ? "ok-btn" : "";
+      rejectBtn.className = entry.status === "rejected" ? "bad-btn" : "";
+
+      if (entry.status === "approved") {
+        approvedFields.style.display = "flex";
+        rejectedFields.style.display = "none";
+        pendingHint.style.display = "none";
+        improvementsInput.value = entry.improvements || "";
+        approveReasonInput.value = entry.approveReason || "";
+      } else if (entry.status === "rejected") {
+        approvedFields.style.display = "none";
+        rejectedFields.style.display = "flex";
+        pendingHint.style.display = "none";
+        rejectReasonInput.value = entry.rejectReason || "";
+      } else {
+        approvedFields.style.display = "none";
+        rejectedFields.style.display = "none";
+        pendingHint.style.display = "block";
+      }
+    }
+
+    function renderBadges(clip) {
+      const badges = document.getElementById("clipBadges");
+      badges.innerHTML = "";
+
+      const catBadge = document.createElement("span");
+      catBadge.className = "badge " + (clip.category === "focus" ? "focus" : "funny");
+      catBadge.textContent = clip.category === "focus"
+        ? "Sobrenatural / Mistério / Conspiração / Aliens"
+        : "Engraçado / Plot Twist";
+      badges.appendChild(catBadge);
+
+      const scoreBadge = document.createElement("span");
+      scoreBadge.className = "badge";
+      scoreBadge.textContent = `Nota ${clip.score}`;
+      badges.appendChild(scoreBadge);
+
+      if (clip.num) {
+        const st = getEntry(clip.num).status;
+        if (st === "approved") {
+          const b = document.createElement("span");
+          b.className = "badge ok";
+          b.textContent = "✓ Aprovado";
+          badges.appendChild(b);
+        } else if (st === "rejected") {
+          const b = document.createElement("span");
+          b.className = "badge bad";
+          b.textContent = "✕ Reprovado";
+          badges.appendChild(b);
+        }
+      }
+
+      if (clip.webcamSegments && clip.webcamSegments.length > 1) {
+        const shiftBadge = document.createElement("span");
+        shiftBadge.className = "badge shift";
+        shiftBadge.textContent = "Troca de webcam no meio do corte";
+        badges.appendChild(shiftBadge);
+      }
+    }
+
+    function renderList() {
+      const list = document.getElementById("clipList");
+      list.innerHTML = "";
+      const hasFocus = CLIPS.some(c => c.category === "focus");
+      const groups = hasFocus
+        ? [
+            { label: "Foco Especial", items: CLIPS.filter(c => c.category === "focus") },
+            { label: "Outros Cortes", items: CLIPS.filter(c => c.category !== "focus") }
+          ].filter(g => g.items.length > 0)
+        : [{ label: "Cortes Selecionados", items: CLIPS }];
+      for (const group of groups) {
+        const hdr = document.createElement("div");
+        hdr.className = "section-label";
+        hdr.textContent = group.label;
+        list.appendChild(hdr);
+        for (const clip of group.items) {
+          const idx = CLIPS.findIndex(c => c.num === clip.num);
+          const entry = getEntry(clip.num);
+          const el = document.createElement("div");
+          el.className = "clip-item"
+            + (!customClip && idx === activeIndex ? " active" : "")
+            + (entry.status === "approved" ? " approved" : "")
+            + (entry.status === "rejected" ? " rejected" : "");
+
+          const icon = document.createElement("div");
+          icon.className = "clip-status-icon";
+          if (entry.status === "approved") {
+            icon.style.color = "#22c55e";
+            icon.textContent = "✓";
+          } else if (entry.status === "rejected") {
+            icon.style.color = "#ef4444";
+            icon.textContent = "✕";
+          } else {
+            icon.style.color = "#64748b";
+            icon.textContent = "•";
+          }
+
+          const info = document.createElement("div");
+          const dur = (clip.end - clip.start).toFixed(1);
+          const hasShift = clip.webcamSegments.length > 1 ? " • ⚠ troca webcam" : "";
+          const hasNote = (entry.status === "approved" && (entry.improvements || entry.approveReason))
+            || (entry.status === "rejected" && entry.rejectReason)
+            ? " • 📝"
+            : "";
+          info.innerHTML = `
+            <div class="clip-title">#${String(clip.num).padStart(2, "0")} — ${clip.title}</div>
+            <div class="clip-meta">
+              <span>${fmt(clip.start)} – ${fmt(clip.end)}</span>
+              <span>${dur}s</span>
+              <span>Nota ${clip.score}${hasShift}${hasNote}</span>
+            </div>
+          `;
+          el.appendChild(icon);
+          el.appendChild(info);
+          el.addEventListener("click", () => selectClip(idx, true));
+          list.appendChild(el);
+        }
+      }
+    }
+
+    function selectClip(idx, updateUrl) {
+      customClip = null;
+      activeIndex = Math.max(0, Math.min(CLIPS.length - 1, idx));
+      const clip = CLIPS[activeIndex];
+      const numStr = String(clip.num).padStart(2, "0");
+      document.getElementById("clipTitle").textContent = `#${numStr} — ${clip.title}`;
+      document.getElementById("clipHook").textContent = `Chamada na tela: "${clip.hook}"`;
+      document.getElementById("clipReason").textContent = clip.reason;
+      document.getElementById("clipWebcamNote").textContent = clip.webcamNote;
+      document.getElementById("timeInfo").textContent =
+        `Corte #${numStr} • ${fmt(clip.start)} até ${fmt(clip.end)} (${(clip.end - clip.start).toFixed(1)}s)`;
+      document.getElementById("ytLink").href =
+        `${VIDEO_URL}&t=${Math.floor(clip.start)}s`;
+
+      if (updateUrl) {
+        const url = new URL(window.location.href);
+        url.searchParams.set("clip", String(clip.num));
+        url.searchParams.delete("t");
+        url.searchParams.delete("end");
+        history.replaceState(null, "", url.toString());
+      }
+
+      renderBadges(clip);
+      renderReviewPanel();
+      renderList();
+      syncScrubberBounds(clip);
+      updateWebcamOverlay(clip.start);
+      seekTo(clip.start, true);
+    }
+
+    function buildInsightsMarkdown() {
+      const now = new Date().toISOString().slice(0, 19).replace("T", " ");
+      const approvedClips = CLIPS.filter(c => getEntry(c.num).status === "approved");
+      const rejectedClips = CLIPS.filter(c => getEntry(c.num).status === "rejected");
+      const pendingClips = CLIPS.filter(c => getEntry(c.num).status === "pending");
+
+      const lines = [
+        `# Insights de Seleção de Cortes — ${VIDEO_TITLE}`,
+        "",
+        `- **Fonte:** ${VIDEO_URL}`,
+        `- **Atualizado em:** ${now}`,
+        `- **Resumo:** ${approvedClips.length} aprovado(s), ${rejectedClips.length} reprovado(s), ${pendingClips.length} pendente(s)`,
+        "",
+        "---",
+        "",
+        "## 1. Cortes Aprovados (Por que funcionaram + Melhorias)",
+        ""
+      ];
+
+      if (!approvedClips.length) {
+        lines.push("_Nenhum corte aprovado até o momento._", "");
+      } else {
+        for (const c of approvedClips) {
+          const e = getEntry(c.num);
+          const numStr = `#${String(c.num).padStart(2, "0")}`;
+          const imp = (e.improvements || "").trim() || "Sem ajustes (aprovado como está)";
+          const why = (e.approveReason || "").trim() || "_Não informado_";
+          lines.push(
+            `### ${numStr} — ${c.title}`,
+            `- **Tempo sugerido:** \`${fmt(c.start)} – ${fmt(c.end)}\` (${(c.end - c.start).toFixed(1)}s)`,
+            `- **Categoria:** ${c.category === "focus" ? "Sobrenatural / Mistério / Conspiração / Aliens" : "Engraçado / Plot Twist"}`,
+            `- **Por que foi aprovado:** ${why}`,
+            `- **Melhorias / ajustes:** ${imp}`,
+            ""
+          );
+        }
+      }
+
+      lines.push("## 2. Cortes Reprovados (O que evitar)", "");
+      if (!rejectedClips.length) {
+        lines.push("_Nenhum corte reprovado até o momento._", "");
+      } else {
+        for (const c of rejectedClips) {
+          const e = getEntry(c.num);
+          const numStr = `#${String(c.num).padStart(2, "0")}`;
+          const why = (e.rejectReason || "").trim() || "_Motivo não informado_";
+          lines.push(
+            `### ${numStr} — ${c.title}`,
+            `- **Tempo sugerido:** \`${fmt(c.start)} – ${fmt(c.end)}\` (${(c.end - c.start).toFixed(1)}s)`,
+            `- **Categoria:** ${c.category === "focus" ? "Sobrenatural / Mistério / Conspiração / Aliens" : "Engraçado / Plot Twist"}`,
+            `- **Motivo da reprovação:** ${why}`,
+            ""
+          );
+        }
+      }
+
+      lines.push("## 3. Síntese para Próximos Vídeos", "");
+      lines.push("### Padrões positivos (manter e priorizar)");
+      const posReasons = approvedClips
+        .map(c => ({ c, txt: (getEntry(c.num).approveReason || "").trim() }))
+        .filter(x => x.txt);
+      if (posReasons.length) {
+        for (const x of posReasons) {
+          lines.push(`- **#${String(x.c.num).padStart(2, "0")} (${x.c.title}):** ${x.txt}`);
+        }
+      } else {
+        lines.push("- _Preencha o campo 'Por que este corte foi aprovado?' nos aprovados para consolidar os acertos._");
+      }
+
+      lines.push("", "### Ajustes de edição / corte recorrentes (melhorias)");
+      const impNotes = approvedClips
+        .map(c => ({ c, txt: (getEntry(c.num).improvements || "").trim() }))
+        .filter(x => x.txt);
+      if (impNotes.length) {
+        for (const x of impNotes) {
+          lines.push(`- **#${String(x.c.num).padStart(2, "0")} (${x.c.title}):** ${x.txt}`);
+        }
+      } else {
+        lines.push("- _Nenhuma melhoria específica registrada (cortes aprovados sem ajustes)._");
+      }
+
+      lines.push("", "### Padrões negativos (evitar nas próximas seleções)");
+      const negReasons = rejectedClips
+        .map(c => ({ c, txt: (getEntry(c.num).rejectReason || "").trim() }))
+        .filter(x => x.txt);
+      if (negReasons.length) {
+        for (const x of negReasons) {
+          lines.push(`- **#${String(x.c.num).padStart(2, "0")} (${x.c.title}):** ${x.txt}`);
+        }
+      } else {
+        lines.push("- _Preencha o motivo nos cortes reprovados para consolidar o que evitar._");
+      }
+
+      lines.push("");
+      return lines.join("\n");
+    }
+
+    function downloadMarkdown(md) {
+      const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "clip-insights.md";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    async function saveInsightsToServer() {
+      const md = buildInsightsMarkdown();
+      if (window.location.protocol.startsWith("http")) {
+        try {
+          const resp = await fetch("/save-review", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ markdown: md, feedback })
+          });
+          if (resp.ok) {
+            const data = await resp.json();
+            actionStatus.textContent = `Salvo em: ${data.insights_path}`;
+            return;
+          }
+        } catch {}
+      }
+      downloadMarkdown(md);
+      actionStatus.textContent = "Servidor offline — arquivo clip-insights.md baixado pelo navegador.";
+    }
+
+    function setClipStatus(status) {
+      const clip = currentClip();
+      if (!clip || !clip.num) return;
+      const entry = getEntry(clip.num);
+      entry.status = status;
+      saveFeedback();
+      renderBadges(clip);
+      renderReviewPanel();
+      renderList();
+    }
+
+    function appendTimestampNote(label) {
+      const clip = currentClip();
+      if (!clip || !clip.num) return;
+      const t = video.readyState >= 1 ? video.currentTime : clip.start;
+      const note = `${label}: ${fmt(t)}`;
+      const cur = improvementsInput.value.trim();
+      improvementsInput.value = cur ? `${cur}; ${note}` : note;
+      getEntry(clip.num).improvements = improvementsInput.value;
+      saveFeedback();
+      renderList();
+    }
+
+    function initFromUrl() {
+      const params = new URLSearchParams(window.location.search);
+      let clipParam = params.get("clip");
+      if (!clipParam && window.location.hash) {
+        const m = window.location.hash.match(/clip=(\d+)/);
+        if (m) clipParam = m[1];
+      }
+      if (clipParam) {
+        const num = parseInt(clipParam, 10);
+        const idx = CLIPS.findIndex(c => c.num === num);
+        if (idx >= 0) {
+          selectClip(idx, false);
+          return;
+        }
+      }
+      const tParam = parseFloat(params.get("t"));
+      if (!Number.isNaN(tParam) && tParam >= 0) {
+        const endParam = parseFloat(params.get("end"));
+        customClip = {
+          num: 0,
+          category: "focus",
+          score: 0,
+          start: tParam,
+          end: !Number.isNaN(endParam) && endParam > tParam ? endParam : tParam + 60,
+          title: `Trecho direto em ${fmt(tParam)}`,
+          hook: "Reprodução a partir do timestamp da URL",
+          reason: "Use a barra lateral para navegar pelos 14 cortes sugeridos.",
+          webcamSegments: [{ from: 0, crop: LEFT_CROP, label: "Esquerda padrão" }],
+          webcamNote: ""
+        };
+        document.getElementById("clipTitle").textContent = customClip.title;
+        document.getElementById("clipHook").textContent = customClip.hook;
+        document.getElementById("clipReason").textContent = customClip.reason;
+        document.getElementById("timeInfo").textContent = `Timestamp direto: ${fmt(customClip.start)}`;
+        document.getElementById("ytLink").href = `${VIDEO_URL}&t=${Math.floor(tParam)}s`;
+        renderBadges(customClip);
+        renderReviewPanel();
+        renderList();
+        syncScrubberBounds(customClip);
+        seekTo(tParam, true);
+        return;
+      }
+      selectClip(0, false);
+    }
+
+    async function hydrateFromServer() {
+      if (!window.location.protocol.startsWith("http")) return;
+      try {
+        const resp = await fetch("/load-review");
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data && data.feedback && typeof data.feedback === "object") {
+          for (const [k, v] of Object.entries(data.feedback)) {
+            if (!feedback[k] || feedback[k].status === "pending") {
+              feedback[k] = { ...emptyEntry(), ...v };
+            }
+          }
+          saveFeedback();
+          renderBadges(currentClip());
+          renderReviewPanel();
+          renderList();
+        }
+      } catch {}
+    }
+
+    // Intercept ArrowLeft / ArrowRight globally in capture phase so <video> never jumps minutes
+    window.addEventListener("keydown", ev => {
+      const tag = document.activeElement ? document.activeElement.tagName : "";
+      if (tag === "TEXTAREA" || tag === "SELECT" || (tag === "INPUT" && document.activeElement.type !== "range")) {
+        return;
+      }
+      if (ev.key === "ArrowLeft" || ev.key === "ArrowRight") {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const step = parseInt(arrowStepSelect.value, 10) || 5;
+        stepSeconds(ev.key === "ArrowLeft" ? -step : step);
+      }
+    }, true);
+
+    video.addEventListener("loadedmetadata", () => {
+      if (pendingSeek !== null) {
+        const t = pendingSeek;
+        pendingSeek = null;
+        video.currentTime = t;
+        video.play().catch(() => {});
+      }
+    });
+
+    video.addEventListener("timeupdate", () => {
+      const clip = currentClip();
+      if (!clip) return;
+      updateWebcamOverlay(video.currentTime);
+      document.getElementById("curTimeLbl").textContent = `Atual: ${fmt(video.currentTime)}`;
+      const minV = parseFloat(localScrubber.min);
+      const maxV = parseFloat(localScrubber.max);
+      if (video.currentTime >= minV && video.currentTime <= maxV) {
+        localScrubber.value = String(video.currentTime);
+      }
+      if (autoStopEl.checked && !video.paused && video.currentTime >= clip.end) {
+        video.pause();
+      }
+    });
+
+    localScrubber.addEventListener("input", () => {
+      seekTo(parseFloat(localScrubber.value), false);
+    });
+
+    arrowStepSelect.addEventListener("change", () => {
+      localStorage.setItem(STEP_KEY, arrowStepSelect.value);
+    });
+
+    showWebcamEl.addEventListener("change", () => updateWebcamOverlay(video.currentTime || currentClip().start));
+    document.getElementById("replayBtn").addEventListener("click", () => seekTo(currentClip().start, true));
+    document.getElementById("stepBack10Btn").addEventListener("click", () => stepSeconds(-10));
+    document.getElementById("stepBack5Btn").addEventListener("click", () => stepSeconds(-5));
+    document.getElementById("stepFwd5Btn").addEventListener("click", () => stepSeconds(5));
+    document.getElementById("stepFwd10Btn").addEventListener("click", () => stepSeconds(10));
+    document.getElementById("prevBtn").addEventListener("click", () => selectClip((activeIndex - 1 + CLIPS.length) % CLIPS.length, true));
+    document.getElementById("nextBtn").addEventListener("click", () => selectClip((activeIndex + 1) % CLIPS.length, true));
+
+    document.getElementById("approveBtn").addEventListener("click", () => setClipStatus("approved"));
+    document.getElementById("rejectBtn").addEventListener("click", () => setClipStatus("rejected"));
+    document.getElementById("clearStatusBtn").addEventListener("click", () => setClipStatus("pending"));
+
+    improvementsInput.addEventListener("input", () => {
+      const clip = currentClip();
+      if (!clip || !clip.num) return;
+      getEntry(clip.num).improvements = improvementsInput.value;
+      saveFeedback();
+      renderList();
+    });
+
+    approveReasonInput.addEventListener("input", () => {
+      const clip = currentClip();
+      if (!clip || !clip.num) return;
+      getEntry(clip.num).approveReason = approveReasonInput.value;
+      saveFeedback();
+      renderList();
+    });
+
+    rejectReasonInput.addEventListener("input", () => {
+      const clip = currentClip();
+      if (!clip || !clip.num) return;
+      getEntry(clip.num).rejectReason = rejectReasonInput.value;
+      saveFeedback();
+      renderList();
+    });
+
+    document.getElementById("stampStartBtn").addEventListener("click", () => appendTimestampNote("Novo início"));
+    document.getElementById("stampEndBtn").addEventListener("click", () => appendTimestampNote("Novo fim"));
+
+    document.getElementById("saveInsightsBtn").addEventListener("click", saveInsightsToServer);
+    document.getElementById("downloadMdBtn").addEventListener("click", () => {
+      downloadMarkdown(buildInsightsMarkdown());
+      actionStatus.textContent = "Arquivo clip-insights.md baixado.";
+    });
+
+    document.getElementById("copyBtn").addEventListener("click", async () => {
+      const approvedClips = CLIPS.filter(c => getEntry(c.num).status === "approved");
+      if (!approvedClips.length) {
+        actionStatus.textContent = "Nenhum clipe aprovado ainda.";
+        return;
+      }
+      const summary = approvedClips.map(c => {
+        const e = getEntry(c.num);
+        const numStr = `#${String(c.num).padStart(2, "0")}`;
+        const imp = (e.improvements || "").trim();
+        return imp ? `${numStr} (melhorias: ${imp})` : `${numStr} (ok como está)`;
+      });
+      const text = `Aprovo os clipes: ${summary.join("; ")}`;
+      try {
+        await navigator.clipboard.writeText(text);
+        actionStatus.textContent = `Copiado: ${text}`;
+      } catch {
+        actionStatus.textContent = text;
+      }
+    });
+
+    async function loadClipsData() {
+      try {
+        const resp = await fetch("/clips-data");
+        if (resp.ok) {
+          const data = await resp.json();
+          VIDEO_URL = data.video_url || "";
+          YT_ID = data.yt_id || "";
+          VIDEO_TITLE = data.video_title || data.workdir_name || "Vídeo";
+          CLIPS = Array.isArray(data.clips) ? data.clips : [];
+          document.title = "Clipper Player — " + VIDEO_TITLE;
+          const h1 = document.getElementById("pageTitle");
+          if (h1) h1.textContent = VIDEO_TITLE + " — Revisão de Cortes";
+        }
+      } catch {}
+    }
+
+    loadClipsData().then(() => {
+      updateCounters();
+      initFromUrl();
+      hydrateFromServer();
+    });
+  </script>
+</body>
+</html>
