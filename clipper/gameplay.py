@@ -130,42 +130,50 @@ def _visual_peaks(capture, duration: float) -> list[Peak]:
 
 
 def _visual_peaks_ffmpeg(video: Path, duration: float) -> list[Peak] | None:
-    """Sequential FFmpeg pipe to avoid slow random seeks on multi-gigabyte VODs."""
+    """Sequential FFmpeg pipe using hardware decode and keyframe skipping on long VODs."""
     step = max(1.0, duration / 1200.0)
     fps = 1.0 / step
     frame_bytes = 160 * 90 * 3
-    cmd = [
-        ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-i", str(video),
-        "-vf", f"fps={fps:.6f},scale=160:90", "-f", "rawvideo", "-pix_fmt", "bgr24", "-",
+    skip = ["-skip_frame", "nokey"] if step >= 2.0 else []
+    attempts = [
+        ["-hwaccel", "cuda", *skip],
+        ["-hwaccel", "auto", *skip],
+        [],
     ]
-    scores: list[float] = []
-    previous_gray, previous_hist = None, None
-    try:
-        with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as proc:
-            assert proc.stdout is not None
-            while len(scores) < 1250:
-                chunk = proc.stdout.read(frame_bytes)
-                if len(chunk) < frame_bytes:
-                    break
-                small = np.frombuffer(chunk, dtype=np.uint8).reshape((90, 160, 3))
-                gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-                hist = cv2.calcHist([small], [0, 1], None, [16, 16], [0, 256, 0, 256])
-                cv2.normalize(hist, hist)
-                if previous_gray is None:
-                    score = 0.0
-                else:
-                    motion = float(np.mean(cv2.absdiff(gray, previous_gray))) / 255.0
-                    scene = float(cv2.compareHist(previous_hist, hist, cv2.HISTCMP_BHATTACHARYYA))
-                    score = motion + 0.65 * scene
-                scores.append(score)
-                previous_gray, previous_hist = gray, hist
-            if proc.wait() != 0 and len(scores) < 3:
-                return None
-    except OSError:
-        return None
-    if len(scores) < 3:
-        return None
-    return find_peaks(np.asarray(scores), step, "visual", threshold=2.0, min_gap=18.0, limit=8)
+    for input_flags in attempts:
+        cmd = [
+            ffmpeg_exe(), "-hide_banner", "-loglevel", "error", *input_flags, "-i", str(video),
+            "-an", "-sn", "-dn", "-vf", f"fps={fps:.6f},scale=160:90",
+            "-f", "rawvideo", "-pix_fmt", "bgr24", "-",
+        ]
+        scores: list[float] = []
+        previous_gray, previous_hist = None, None
+        try:
+            with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as proc:
+                assert proc.stdout is not None
+                while len(scores) < 1250:
+                    chunk = proc.stdout.read(frame_bytes)
+                    if len(chunk) < frame_bytes:
+                        break
+                    small = np.frombuffer(chunk, dtype=np.uint8).reshape((90, 160, 3))
+                    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+                    hist = cv2.calcHist([small], [0, 1], None, [16, 16], [0, 256, 0, 256])
+                    cv2.normalize(hist, hist)
+                    if previous_gray is None:
+                        score = 0.0
+                    else:
+                        motion = float(np.mean(cv2.absdiff(gray, previous_gray))) / 255.0
+                        scene = float(cv2.compareHist(previous_hist, hist, cv2.HISTCMP_BHATTACHARYYA))
+                        score = motion + 0.65 * scene
+                    scores.append(score)
+                    previous_gray, previous_hist = gray, hist
+                if proc.wait() != 0 and len(scores) < 3:
+                    continue
+        except OSError:
+            return None
+        if len(scores) >= 3:
+            return find_peaks(np.asarray(scores), step, "visual", threshold=2.0, min_gap=18.0, limit=8)
+    return None
 
 
 def _cached_visual_peaks(capture, duration: float, video: Path, cache: Path) -> list[Peak]:

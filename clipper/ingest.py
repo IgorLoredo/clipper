@@ -46,11 +46,26 @@ def fetch(source: str, out_root: Path, chat: str | None = None, *,
         result = _download(source, out_root, fetch_subtitles=fetch_subtitles, language=language)
     else:
         path = Path(source).expanduser().resolve()
-        if not path.is_file():
+        if path.is_dir():
+            video = _find_video(path)
+            if video is None:
+                raise FileNotFoundError(f"no video found in {path}")
+            workdir = path
+            path = video
+            title = workdir.name
+        elif not path.is_file():
             raise FileNotFoundError(path)
-        workdir = out_root / slugify(path.stem)
+        elif path.parent.parent.resolve() == out_root.resolve():
+            workdir = path.parent
+            title = path.parent.name if path.stem == "source" else path.stem
+        else:
+            workdir = out_root / slugify(path.stem)
+            title = path.stem
         workdir.mkdir(parents=True, exist_ok=True)
-        result = Source(video=path, title=path.stem, workdir=workdir, chat=None,
+        chat_file = next((p for p in sorted(workdir.glob("source*.json")) if p.name != "source.json"), None)
+        engagement = workdir / "engagement.json" if (workdir / "engagement.json").is_file() else None
+        result = Source(video=path, title=title, workdir=workdir, chat=chat_file,
+                        engagement=engagement,
                         subtitles=_find_json3(workdir, language))
     if chat:
         target = result.workdir / f"chat{Path(chat).suffix or '.json'}"

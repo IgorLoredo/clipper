@@ -179,7 +179,8 @@ def _draw_safe_zones(image_path: Path) -> None:
     import cv2
     import numpy as np
 
-    img = cv2.imread(str(image_path))
+    data = np.fromfile(str(image_path), dtype=np.uint8)
+    img = cv2.imdecode(data, cv2.IMREAD_COLOR)
     if img is None:
         return
     h, w = img.shape[:2]
@@ -194,7 +195,9 @@ def _draw_safe_zones(image_path: Path) -> None:
     blended = cv2.addWeighted(overlay, 0.28, img, 0.72, 0)
     cv2.rectangle(blended, (0, top_h), (right_x, bottom_y), (0, 255, 0), 2)
     cv2.putText(blended, "SAFE ZONE", (18, top_h + 36), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2, cv2.LINE_AA)
-    cv2.imwrite(str(image_path), blended)
+    ok, buf = cv2.imencode(".png", blended)
+    if ok:
+        buf.tofile(str(image_path))
 
 
 def _render_args(video: Path, start: float, end: float, framing: Framing,
